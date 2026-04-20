@@ -40,11 +40,18 @@ L1 label accuracy → L2 noise / perturbation robustness → L3 intervention gro
 ### Out of scope for v0
 Real-time interaction, audio-rate tone coupling, GNNs, RLHF, third-party music datasets, human listening studies.
 
+### Implementation contracts (frozen shape, no code yet)
+- Simulator contract — `DESIGN_V0.md §9`. Defines scene vs run, canonical YAML, per-step export schema (`state.npz`), audio rendering, event schema, output artifact layout, determinism rules, derived-state helpers, and the `sim.run` / `sim.ablate` / `sim.detect` surface.
+- Detector contract — `DESIGN_V0.md §10`. Fair-game vs privileged vs eval-only input boundary; output schema; confidence = evidence margin; thresholds in versioned YAML; counterfactual detectors only via `sim.ablate`.
+- Per-label reference — `ONTOLOGY.md` at repo root.
+
 ### First coding milestone
-Simulator + detectors + dataset dump only. **No model code yet.** Acceptance criteria are recorded in `DESIGN_V0.md §9`.
+Simulator + detectors + dataset dump only. **No model code yet.** Acceptance criteria are recorded in `DESIGN_V0.md §11` (renumbered from §9 when the contracts were inserted).
 
 ### Working conventions
-- Full design lives in `DESIGN_V0.md` at repo root.
+- Design narrative: `DESIGN_V0.md`.
+- Per-label implementation sheet: `ONTOLOGY.md`.
+- Project canon and pivots: this file.
 - Per-exchange: update this file, commit design + notes together, **do not push**.
 
 ---
@@ -68,3 +75,13 @@ Terminology tightening for the pulse-first v0 world. No scope changes.
 - **`unstable_bridge` — name kept, detector redefined.** Old wording assumed a discrete edge set ("edge whose removal splits the graph"); the garden is distance-weighted, fully connected with no discrete edges. Redefined as a **load-bearing node** whose in-sim ablation drops the cluster's order parameter below the lock threshold. Name kept because the musical "bridge about to collapse" connotation is worth preserving.
 - **Detector confidence doctrine recorded.** Confidence in `labels.json` is evidence margin (how strongly / stably a condition was met), not epistemic uncertainty. Detectors are deterministic; graded scores exist so downstream tasks can distinguish marginal from solid.
 - **README promoted to a proper front door.** Public-facing summary surfacing the project thesis, the v0 shape, and — most prominently — intervention grounding as the headline evaluation principle.
+
+### 2026-04-20 — Claude Opus 4.7 (doc pass 3 — implementation contracts)
+Paperwork-shaped implementation bridge. Still no code.
+
+- **`ONTOLOGY.md` extracted.** The per-label detail previously embedded in `DESIGN_V0.md §3` now lives in a dedicated file, reshaped into a consistent per-label schema (kind / intuition / detector sketch / inputs / knobs / confidence source / failure modes / overlaps). `DESIGN_V0.md §3` shrinks to a pointer plus the existing doctrine on confidence and pulse-domain framing. Rationale: the table was narrative-shaped, but detector code needs a reference-shaped artifact.
+- **Simulator contract — `DESIGN_V0.md §9` (new).** Freezes the shape before any code: scene-vs-run vocabulary, canonical YAML, per-step export fields, audio-rendering rules, event schema, artifact layout, determinism, derived-state helpers, CLI / programmatic surface. `sim.ablate` is designated as the only counterfactual back door.
+- **Detector contract — `DESIGN_V0.md §10` (new).** The key boundary: fair-game inputs (state / topology / events / helpers / `sim.ablate`) vs privileged latent truth (regime-template name, seed, any "answer" fields) vs eval-only signals (regime name for stratified reporting, intended bifurcation times). Output schema, windowed semantics, confidence = evidence margin, thresholds in versioned YAML, compound-vs-counterfactual declarations. `ablate_node` added to the event-type closed set so `unstable_bridge` has a concrete counterfactual primitive.
+- **First coding milestone renumbered §9 → §11.** Acceptance criteria unchanged.
+- **Working convention recorded: simulator must never export "answer" latent fields** (e.g. a hypothetical `is_locked`). Dual-enforced — sim contract forbids writing them, detector contract forbids reading them. This is the single most load-bearing boundary for keeping the detection problem honest.
+- **Known-weak-spot list published in `ONTOLOGY.md`.** `groove`, `flam`, `polyrhythmic`, coarse-`N=8` `dominant_cluster` threshold, and ablation cluster-matching for `unstable_bridge`. Flagged but not reopened — these are sniff-test-driven iterations, not design work.

@@ -99,25 +99,13 @@ Knobs that matter:
 
 ## 3. Semantic Ontology
 
-Compact (13 labels), multi-label, testable. Each label has a **deterministic detector** computed from state / events.
+Compact (13 labels), multi-label, testable. Each label has a **deterministic detector** computed from state / events. Detectors are part of the simulator package, not the model — they are ground truth.
 
-| label                          | condition (sketch)                                                                                                                                         | instrument-native gloss       |
-|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
-| `phase_locked`                 | Kuramoto order parameter `r > 0.9` sustained ≥ 1 s                                                                                                         | "it locked in"                |
-| `drifting`                     | `r < 0.3` sustained ≥ 1 s                                                                                                                                  | "loose, wandering"            |
-| `polyrhythmic`                 | ≥ 2 stable sub-clusters with distinct mean freq                                                                                                            | "two rhythms at once"         |
-| `phase_beating` (was `beating`) | two pulse streams with small Δf whose pulse-arrival times drift with a slow periodic offset — the pulse-domain analogue of acoustic beating, not wave-level interference | "wobble"                      |
-| `dominant_cluster`             | one cluster holds >50% of nodes at highest local `r`                                                                                                       | "the big group is running it" |
-| `brittle_lock`                 | `r > 0.9` **and** smallest perturbation-to-unlock < threshold                                                                                              | "locked but fragile"          |
-| `unstable_bridge`              | a single node whose coupling contribution is load-bearing for cluster coherence — ablating it in-sim drops the cluster's `r` below the lock threshold      | "held by a thread"            |
-| `groove`                       | `r` stable in `[0.6, 0.85]` with small bounded oscillation                                                                                                 | "it's breathing"              |
-| `groove_collapse`              | `groove` → `drifting` within a short window                                                                                                                | "lost the pocket"             |
-| `beat_bloom` (was `interference_bloom`) | transient rise-and-fall in the `phase_beating` index for a node pair — streams approach near-coherence, briefly interlock, then drift apart          | "flutter then settle"         |
-| `tension_break`                | `K₀` rising followed by sudden cluster reorganization                                                                                                      | "it snapped"                  |
-| `flam`                         | pulse pair with 10–40 ms phase offset                                                                                                                      | "flammed unison"              |
-| `regime_change`                | detected cluster-count change sustained past a hysteresis window                                                                                           | "different piece now"         |
+Full per-label detail (intuition, detector sketch, inputs, knobs, confidence source, failure modes, overlaps) lives in [`ONTOLOGY.md`](./ONTOLOGY.md). The list:
 
-A clip is labelled with the (possibly multiple) labels whose detectors fired, plus time windows and per-detector confidence scores. Detectors are part of the simulator package, not the model — they are ground truth.
+`phase_locked`, `drifting`, `polyrhythmic`, `phase_beating`, `dominant_cluster`, `brittle_lock`, `unstable_bridge`, `groove`, `groove_collapse`, `beat_bloom`, `tension_break`, `flam`, `regime_change`.
+
+A clip is labelled with the (possibly multiple) labels whose detectors fired, plus time windows and per-detector confidence scores.
 
 ### 3.1 Detector confidence — doctrine
 
@@ -264,7 +252,293 @@ The model must beat both, convincingly, on average. This is what distinguishes t
 
 ---
 
-## 9. First coding milestone
+## 9. Simulator contract
+
+Implementation-facing. The layer the detector code, data pipeline, and (eventually) model training will call into. No code yet — but the shape is frozen here.
+
+### 9.1 Vocabulary
+
+- **Scene** — the static description of a garden: node count, per-node static params, coupling params, noise amplitude. A scene alone does not produce a run.
+- **Run** — a scene + `duration_s` + `seed` + scheduled `events[]`, executed once. Deterministic under `(config, seed)`.
+- **Frame / step** — one control-rate tick (default 200 Hz).
+- **Ablation** — a scheduled or injected perturbation applied to a run's config, producing a *new* run. Used by counterfactual detectors.
+
+### 9.2 Run config (canonical YAML schema)
+
+```yaml
+version: 1
+scene:
+  N: 8
+  nodes:                      # length must equal N
+    - {pos: [0.20, 0.30], omega_0_hz: 2.5, gamma: 0.10, voice: 0}
+    - {pos: [0.45, 0.55], omega_0_hz: 3.1, gamma: 0.10, voice: 1}
+    # ...
+  coupling:
+    K0: 0.80                  # initial value; events may mutate
+    sigma: 0.40               # distance-kernel width
+  noise:
+    eta: 0.02                 # 0 disables
+run:
+  duration_s: 8.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42
+events:                       # optional, sorted by t at load
+  - {t: 3.0, type: setK,    K0: 1.10}
+  - {t: 5.5, type: nudge,   node: 3, delta_hz: 0.15}
+  - {t: 6.2, type: impulse, node: 5}
+  - {t: 7.0, type: move,    node: 2, delta_pos: [0.05, -0.02]}
+```
+
+All fields required unless marked optional. Unknown keys are an error, not a warning.
+
+### 9.3 Per-step exports (control rate)
+
+Written to `state.npz`. Arrays of shape `(T, N)` unless noted. `T = duration_s * control_rate_hz + 1`.
+
+| field          | dtype     | shape  | notes                                         |
+|----------------|-----------|--------|-----------------------------------------------|
+| `t`            | float32   | (T,)   | seconds from run start                        |
+| `theta`        | float32   | (T, N) | phase, radians, wrapped `[−π, π]`             |
+| `phase_vel`    | float32   | (T, N) | rad/s, derived from `theta` with finite diff  |
+| `A`            | float32   | (T, N) | amplitude, `[0, 1]`                           |
+| `pulse_fired`  | bool      | (T, N) | true on phase-zero crossings this frame       |
+| `K0_t`         | float32   | (T,)   | global coupling over time (mutated by events) |
+
+Detectors may read any of these. The simulator must **not** export additional "helper" latent fields (e.g. a boolean `is_locked`) — see §10.
+
+### 9.4 Audio rendering
+
+- Stereo PCM at `audio_rate_hz = 22050`, `int16` WAV.
+- Each `pulse_fired[t, i]` schedules a voice-`voice_i` grain at the corresponding sample index.
+- Grain = short envelope × fixed-pitch tone for that voice. Voice palette is static data, shared across runs (v0: 8 voices).
+- Stereo pan is a monotonic function of `pos_i.x`.
+- **No tone-level coupling** (audio-rate beating between continuous tones is v0.1, see §8).
+
+### 9.5 Events / gestures
+
+Both scheduled (from config) and simulator-emitted parameter changes are logged to `events.jsonl`. One event per line:
+
+```json
+{"t": 3.0, "type": "setK", "K0": 1.10, "id": "evt_000", "source": "scheduled"}
+{"t": 5.5, "type": "nudge", "node": 3, "delta_hz": 0.15, "id": "evt_001", "source": "scheduled"}
+```
+
+Pulse firings are **not** events — they live in `state.npz`. Events are reserved for things that change the config of the simulation mid-run.
+
+Event types (v0, closed set):
+- `setK` — `{K0: float}`
+- `nudge` — `{node: int, delta_hz: float}` — modifies `omega_0_hz[node]` permanently from `t`
+- `impulse` — `{node: int}` — sets `theta[node] = 0` at `t`
+- `move` — `{node: int, delta_pos: [dx, dy]}` — modifies position (affects coupling kernel from `t`)
+- `ablate_node` — `{node: int}` — sets `A[node] = 0` and zeros coupling to/from node for remainder of run (counterfactual only; not used in primary-generation configs)
+
+### 9.6 Output artifact layout
+
+```
+runs/<run_id>/
+  config.yaml       # frozen copy of the config actually used
+  topology.json     # scene + initial state (positions, voices, static params)
+  state.npz         # per-step arrays (§9.3)
+  events.jsonl      # §9.5
+  audio.wav         # stereo 22050 Hz int16
+  labels.json       # detector outputs — written by detector layer, NOT by sim
+```
+
+`labels.json` is out of the simulator's scope. The simulator's artifact set is everything else.
+
+### 9.7 Determinism
+
+- `(config + seed)` → byte-identical `state.npz`, `events.jsonl`, `topology.json`, `audio.wav`. WAV header timestamps must be zeroed.
+- No wall-clock dependencies in dynamics, audio, or RNG seeding.
+- RNG stream is derived from `seed` alone; no `/dev/urandom` or time-based entropy.
+- Pinning the numeric library stack (NumPy / SciPy versions) is acceptable for v0 — document in `requirements.txt` when code lands.
+
+### 9.8 Derived-state helpers (provided, not stored)
+
+Detectors may call, but the outputs are not written to `state.npz`:
+
+- `kuramoto_order(theta) → r(t)` of shape `(T,)`
+- `local_order(theta, members) → r(t)` for a subset of nodes
+- `cluster_assignments(theta, phase_vel, t) → labels(t, N)` with documented DBSCAN params
+- `pulse_times_of(pulse_fired, t, i) → array of float seconds`
+- `cluster_signature(labels, phase_vel, window) → (count, size_hist, freq_hist)`
+
+Helpers live in `sim.derived` (or equivalent). They are pure functions of exported state. Detectors must not import private simulator internals.
+
+### 9.9 CLI / API surface (v0)
+
+```
+python -m sim.run     --config PATH --out DIR [--seed N]
+python -m sim.ablate  --run DIR    --perturbation JSON --out DIR [--seed N]
+python -m sim.detect  --run DIR    [--detectors LIST]      # writes labels.json
+```
+
+Programmatic:
+
+```python
+from sim import Garden
+
+g   = Garden.from_config("configs/regime_locked.yaml", seed=42)
+run = g.simulate()                          # returns RunArtifacts
+run.save("runs/demo")
+
+alt_cfg = g.config.with_ablation({"type": "ablate_node", "node": 3})
+alt     = Garden.from_config(alt_cfg, seed=42).simulate()
+```
+
+`sim.ablate` is the single counterfactual entry point — all ablation-style detectors go through it. The simulator must not expose a different back door for counterfactuals.
+
+---
+
+## 10. Detector contract
+
+Implementation-facing rules for the detector layer. Goal: detectors grounded in sim outputs, with a sharp boundary against cheating by reading privileged ground truth.
+
+### 10.1 Fair-game inputs
+
+A detector **may** read:
+
+- Anything in `state.npz` (§9.3).
+- `topology.json` (positions, voices, per-node static params, initial coupling params).
+- `events.jsonl` (scheduled + emitted parameter-change events).
+- Derived-state helpers (§9.8).
+- Outputs of other detectors — **only** when the detector is declared *compound* (see §10.5) and the dependency is documented in `ONTOLOGY.md`.
+- In-sim ablation reruns via `sim.ablate` (§9.9) — only for detectors declared *counterfactual*, with a bounded rollout budget.
+
+### 10.2 Privileged latent truth — forbidden
+
+A detector **must not** read:
+
+- The regime-template name used by the generator (e.g. `LOCKED`, `BRITTLE`). Regime templates are data-generation categories; labels must be re-derived from observable state.
+- The random seed, RNG state, or any internal simulator state not exported.
+- Any "convenience" latent field asserting the answer (e.g. a hypothetical `is_locked` flag). The simulator contract forbids exporting such fields; the detector contract independently forbids reading them.
+- The outputs of upstream data-generation logic (e.g. the intended bifurcation time of a `SWEEP` template).
+
+If a field exists that looks like latent truth, it is a contract bug and gets removed.
+
+### 10.3 Eval-only signals — not detection inputs
+
+These signals exist and are useful, but only for evaluation reporting and for driving data generation:
+
+- Regime-template name (stratified metric reporting).
+- Human-assigned audit tags from the sniff test.
+- Intended bifurcation times in `SWEEP` configs (used to score `tension_break` / `regime_change` timing, not to detect them).
+
+The detector function's input signature must not accept any of these. A code-level lint rule is the cleanest enforcement.
+
+### 10.4 Output schema
+
+Each detector returns (and `labels.json` is a JSON array of):
+
+```json
+{
+  "label": "phase_locked",
+  "fired": true,
+  "windows": [
+    {"t_start": 1.24, "t_end": 4.31, "confidence": 0.87}
+  ],
+  "per_node": null,
+  "notes": "optional freeform string for audit trails",
+  "detector_version": "phase_locked@0.1",
+  "thresholds_ref": "detectors/phase_locked.yaml#v0.1"
+}
+```
+
+- `fired: false` detectors may be omitted from `labels.json` or included with empty `windows`; a dataset convention picks one. v0 default: **include all, with empty `windows` on non-firing.** Makes downstream joins trivial.
+- `per_node` is `null` unless the label is per-node (e.g. `unstable_bridge`, `dominant_cluster`).
+- `windows` must be non-overlapping and sorted by `t_start`.
+- Times in seconds, aligned to `state.npz` frames.
+
+### 10.5 Compound and counterfactual declarations
+
+Each detector declares exactly one of these types in its YAML config:
+
+- `direct` — reads only §10.1 primary inputs + helpers.
+- `compound` — additionally reads other detectors' outputs. Must list which ones.
+- `counterfactual` — additionally calls `sim.ablate`. Must declare a rollout budget.
+
+A detector cannot be both compound and counterfactual in v0. If that need arises, lift the dependency out or restructure.
+
+### 10.6 Time-window semantics
+
+- All windows are in seconds relative to run start, snapped to the nearest control-rate frame.
+- Hysteresis and minimum-duration parameters merge adjacent satisfying intervals before emitting windows.
+- Detectors may use future samples in v0 (offline / whole-run analysis is the default; streaming / online detection is not a v0 requirement). Document any detector that genuinely requires full-run access in its YAML (e.g. `regime_change` needs before/after context).
+
+### 10.7 Confidence semantics
+
+Confidence is **evidence margin**, `[0, 1]`, not probability-of-correctness.
+
+Each detector's confidence function must:
+- Be a documented deterministic function of observable quantities (not a learned score).
+- Degrade smoothly as the condition approaches its threshold from above.
+- Scale with sustain (longer windows above threshold → higher confidence, up to a cap).
+- Be expressible in one or two lines in the detector YAML / pseudocode.
+
+Typical form: `sigmoid(k * (observed − threshold)) * min(1, duration / min_duration)`.
+
+### 10.8 Threshold representation
+
+- Every detector has a YAML config at `detectors/<label>.yaml` with:
+  ```yaml
+  detector: phase_locked
+  version: 0.1
+  thresholds:
+    r_lock: 0.9
+    min_duration_s: 1.0
+    hysteresis_s: 0.2
+  confidence:
+    k: 10.0
+    duration_cap_s: 2.0
+  ```
+- No magic numbers in detector code. Changing a threshold → version bump. The `thresholds_ref` field in detector output pins the exact config used.
+- Threshold tuning during the sniff test is expected; that is exactly what the version field is for.
+
+### 10.9 Scope: runs, not streams
+
+- v0 detectors operate on whole exported runs.
+- Detector implementations **should** be causal where possible (especially the cheap ones like `phase_locked`), to make future streaming ports less painful. But this is a preference, not a contract.
+- `regime_change` and the counterfactual detectors are not causal. That is declared in their YAML.
+
+### 10.10 Counterfactual pattern (`brittle_lock`, `unstable_bridge`)
+
+The only API for counterfactual evidence is `sim.ablate` (§9.9). Pattern:
+
+```python
+def detect_brittle_lock(run, cfg):
+    if not phase_locked(run, cfg_pl).fired:                    # compound-on-direct is fine here
+        return not_fired("phase_locked did not fire")
+    for delta in cfg.perturbation_ladder:                      # ascending
+        perturbation = select_perturbation(run, delta, cfg)    # deterministic choice
+        alt = sim.ablate(run.config_path, perturbation, seed=run.seed)
+        if not phase_locked(alt, cfg_pl).fired:
+            return fired(conf=1.0 - delta / cfg.max_delta, notes=f"broken at {delta}")
+    return not_fired("did not break within ladder")
+```
+
+Rules:
+
+- The counterfactual detector **never** inspects the simulator's internal state during the ablation rerun. It only reads the resulting `RunArtifacts`, like any other detector.
+- The rollout budget is a YAML field and hard-enforced. A detector that tries to run `N+1` rollouts fails closed.
+- Ablation reruns inherit the parent run's seed unless the detector explicitly overrides (and documents why).
+
+### 10.11 Determinism
+
+Detectors are deterministic functions of `(artifacts, config)`. No RNG. If an underlying helper is non-deterministic (e.g. DBSCAN tie-breaking), it must be seeded from a constant or the parent run's seed — documented in the helper, not the detector.
+
+### 10.12 What the detector layer can assume exists
+
+Summary (i.e. the contract with §9):
+
+- Full `state.npz`, `topology.json`, `events.jsonl` for the run.
+- Derived-state helpers in `sim.derived`.
+- `sim.ablate(config_or_path, perturbation, seed) → RunArtifacts` for counterfactual detectors.
+- Absence of any "answer" field inside `state.npz`. If one appears, it is a sim contract violation.
+
+---
+
+## 11. First coding milestone
 
 **Ship the simulator, detectors, and dataset dump. No model yet.**
 
