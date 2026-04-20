@@ -26,6 +26,7 @@ from sim.derived import (  # noqa: E402
     local_kuramoto_order,
     mean_phase_velocity,
     split_by_largest_velocity_gap,
+    sustained_windows,
 )
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
@@ -101,6 +102,54 @@ def test_two_cluster_regime_shows_bimodal_structure():
     )
 
 
+# ---------------------------------------------------------------------------
+# DRIFTING — sustained low global coherence, separated from locked and two_cluster.
+
+def test_drifting_regime_sustains_low_coherence():
+    cfg, art = _run(CONFIGS_DIR / "regime_drifting.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    r = kuramoto_order(art["theta"])
+
+    # (1) Threshold r(t) into a "low coherence" indicator and look for a
+    # sustained window. Hysteresis absorbs the brief sub-second upward
+    # spikes that happen when drifting phases pass near each other;
+    # min_duration rejects the half-second valleys seen in two_cluster.
+    thr = 0.5
+    low = r < thr
+    windows = sustained_windows(
+        low,
+        min_duration_frames=int(2.0 * rate),
+        hysteresis_frames=int(0.25 * rate),
+    )
+    assert windows, (
+        f"expected a sustained low-coherence window (r < {thr}); "
+        f"got none (mean r = {r.mean():.3f}, max r = {r.max():.3f})"
+    )
+    longest = max(e - s for s, e in windows)
+    assert longest >= int(3.0 * rate), (
+        f"expected a ≥ 3 s sustained low-coherence window, got {longest / rate:.2f} s"
+    )
+
+    # (2) Pin tail mean well below two_cluster's middle band (observed ≈ 0.63)
+    # and far below locked's near-unity coherence. This is the regime
+    # separator — the same `sustained_windows` call above returns 0 frames
+    # for locked (r stays > 0.95) and < 1.0 s for two_cluster (short valleys).
+    tail_s = 2.0
+    n_tail = int(tail_s * rate)
+    r_tail_mean = float(r[-n_tail:].mean())
+    assert r_tail_mean < 0.40, (
+        f"expected tail mean r < 0.40 to separate drifting from two_cluster's "
+        f"middle band, got {r_tail_mean:.3f}"
+    )
+
+    frac_low = float(low.mean())
+    print(
+        f"ok: drifting — tail mean r = {r_tail_mean:.4f}, frac(r<{thr}) = {frac_low:.3f}, "
+        f"{len(windows)} sustained window(s), longest = {longest} f ({longest/rate:.2f} s)"
+    )
+
+
 if __name__ == "__main__":
     test_locked_regime_reaches_phase_lock()
     test_two_cluster_regime_shows_bimodal_structure()
+    test_drifting_regime_sustains_low_coherence()

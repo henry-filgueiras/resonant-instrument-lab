@@ -176,3 +176,93 @@ def split_by_largest_velocity_gap(mean_vel):
     low = np.sort(order[: split_at + 1])
     high = np.sort(order[split_at + 1 :])
     return VelocitySplit(low_indices=low, high_indices=high, gap=max_gap, bimodal_ratio=ratio)
+
+
+def sustained_windows(condition, min_duration_frames, hysteresis_frames=0):
+    """Find windows where a boolean time series stays True for a sustained span.
+
+    The core primitive for sustained-condition detectors: given a 1D
+    boolean series over time (e.g. `r(t) < 0.3`, or "cluster A is
+    locked"), return the frame-index windows in which the condition
+    holds long enough to be considered sustained, with brief
+    interruptions absorbed by hysteresis.
+
+    Parameters
+    ----------
+    condition : array-like, shape `(T,)`
+        Time-indexed boolean (or bool-castable) series.
+    min_duration_frames : int, >= 1
+        Minimum span of a returned window, measured as `end - start` on
+        the returned half-open interval (i.e. the full span including
+        any absorbed hysteresis gaps, not the count of True frames).
+    hysteresis_frames : int, >= 0, default 0
+        A stretch of False between two True runs is *absorbed* into the
+        window if its length is `<= hysteresis_frames`. `0` disables
+        absorption — only strictly contiguous True runs are considered.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        Sorted, non-overlapping half-open intervals `[start, end)` on
+        the frame axis, each satisfying:
+          - `0 <= start < end <= T`;
+          - `condition[start]` and `condition[end - 1]` are both True
+            (trailing False hysteresis is never included);
+          - any False stretch strictly between two True sub-runs inside
+            the window has length `<= hysteresis_frames`;
+          - `end - start >= min_duration_frames`.
+        `condition[start:end]` slices exactly the window's frames.
+
+    Edge cases
+    ----------
+    - `T == 0` → `[]`.
+    - all-False → `[]`.
+    - all-True → `[(0, T)]` if `T >= min_duration_frames`, else `[]`.
+    - True runs (after hysteresis merging) shorter than
+      `min_duration_frames` are dropped silently.
+    - `hysteresis_frames = 0` means adjacent True frames separated by
+      even a single False frame stay in separate runs.
+
+    Purity
+    ------
+    No config, no wall-clock time, no thresholds — callers convert
+    seconds to frames themselves via `control_rate_hz`. The primitive
+    is unit-agnostic: the same function works over control-rate bools,
+    pulse bools, or any other 1D boolean time series.
+    """
+    arr = np.asarray(condition)
+    if arr.ndim != 1:
+        raise ValueError(f"condition must be 1D, got shape {arr.shape}")
+    if min_duration_frames < 1:
+        raise ValueError(f"min_duration_frames must be >= 1, got {min_duration_frames}")
+    if hysteresis_frames < 0:
+        raise ValueError(f"hysteresis_frames must be >= 0, got {hysteresis_frames}")
+
+    arr = arr.astype(bool, copy=False)
+    T = arr.shape[0]
+    if T == 0:
+        return []
+
+    padded = np.concatenate(([False], arr, [False]))
+    edges = np.diff(padded.astype(np.int8))
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)
+
+    if starts.size == 0:
+        return []
+
+    merged_starts = [int(starts[0])]
+    merged_ends = [int(ends[0])]
+    for s, e in zip(starts[1:], ends[1:]):
+        gap = int(s) - merged_ends[-1]
+        if gap <= hysteresis_frames:
+            merged_ends[-1] = int(e)
+        else:
+            merged_starts.append(int(s))
+            merged_ends.append(int(e))
+
+    return [
+        (s, e)
+        for s, e in zip(merged_starts, merged_ends)
+        if e - s >= min_duration_frames
+    ]
