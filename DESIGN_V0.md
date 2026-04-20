@@ -101,23 +101,31 @@ Knobs that matter:
 
 Compact (13 labels), multi-label, testable. Each label has a **deterministic detector** computed from state / events.
 
-| label                 | condition (sketch)                                                      | instrument-native gloss       |
-|-----------------------|-------------------------------------------------------------------------|-------------------------------|
-| `phase_locked`        | Kuramoto order parameter `r > 0.9` sustained ≥ 1 s                      | "it locked in"                |
-| `drifting`            | `r < 0.3` sustained ≥ 1 s                                               | "loose, wandering"            |
-| `polyrhythmic`        | ≥ 2 stable sub-clusters with distinct mean freq                         | "two rhythms at once"         |
-| `beating`             | two nodes with small Δω and sustained partial coherence                 | "wobble"                      |
-| `dominant_cluster`    | one cluster holds >50% of nodes at highest local `r`                    | "the big group is running it" |
-| `brittle_lock`        | `r > 0.9` **and** smallest perturbation to unlock < threshold           | "locked but fragile"          |
-| `unstable_bridge`     | one inter-cluster edge whose removal splits the graph                   | "held by a thread"            |
-| `groove`              | `r` stable in `[0.6, 0.85]` with small bounded oscillation              | "it's breathing"              |
-| `groove_collapse`     | `groove` → `drifting` within a short window                             | "lost the pocket"             |
-| `interference_bloom`  | transient peak in beating index followed by decay                       | "flutter then settle"         |
-| `tension_break`       | `K₀` rising followed by sudden cluster reorganization                   | "it snapped"                  |
-| `flam`                | pulse pair with 10–40 ms phase offset                                   | "flammed unison"              |
-| `regime_change`       | detected cluster-count change sustained past a hysteresis window        | "different piece now"         |
+| label                          | condition (sketch)                                                                                                                                         | instrument-native gloss       |
+|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
+| `phase_locked`                 | Kuramoto order parameter `r > 0.9` sustained ≥ 1 s                                                                                                         | "it locked in"                |
+| `drifting`                     | `r < 0.3` sustained ≥ 1 s                                                                                                                                  | "loose, wandering"            |
+| `polyrhythmic`                 | ≥ 2 stable sub-clusters with distinct mean freq                                                                                                            | "two rhythms at once"         |
+| `phase_beating` (was `beating`) | two pulse streams with small Δf whose pulse-arrival times drift with a slow periodic offset — the pulse-domain analogue of acoustic beating, not wave-level interference | "wobble"                      |
+| `dominant_cluster`             | one cluster holds >50% of nodes at highest local `r`                                                                                                       | "the big group is running it" |
+| `brittle_lock`                 | `r > 0.9` **and** smallest perturbation-to-unlock < threshold                                                                                              | "locked but fragile"          |
+| `unstable_bridge`              | a single node whose coupling contribution is load-bearing for cluster coherence — ablating it in-sim drops the cluster's `r` below the lock threshold      | "held by a thread"            |
+| `groove`                       | `r` stable in `[0.6, 0.85]` with small bounded oscillation                                                                                                 | "it's breathing"              |
+| `groove_collapse`              | `groove` → `drifting` within a short window                                                                                                                | "lost the pocket"             |
+| `beat_bloom` (was `interference_bloom`) | transient rise-and-fall in the `phase_beating` index for a node pair — streams approach near-coherence, briefly interlock, then drift apart          | "flutter then settle"         |
+| `tension_break`                | `K₀` rising followed by sudden cluster reorganization                                                                                                      | "it snapped"                  |
+| `flam`                         | pulse pair with 10–40 ms phase offset                                                                                                                      | "flammed unison"              |
+| `regime_change`                | detected cluster-count change sustained past a hysteresis window                                                                                           | "different piece now"         |
 
 A clip is labelled with the (possibly multiple) labels whose detectors fired, plus time windows and per-detector confidence scores. Detectors are part of the simulator package, not the model — they are ground truth.
+
+### 3.1 Detector confidence — doctrine
+
+Detector confidence is **evidence margin**, not epistemic uncertainty. It measures *how strongly and stably* the defining condition was met — e.g. how far `r` exceeded the lock threshold, for how long, across how many nodes. Detectors are deterministic; graded confidence scores simply let downstream tasks distinguish a marginal lock from a rock-solid one, or a fleeting bloom from a sustained one.
+
+### 3.2 Note on "beating" in a pulse-first world
+
+`phase_beating` and `beat_bloom` do **not** refer to audio-rate acoustic beating between continuous tones. v0 is pulse-driven; what these detectors measure is the slow drift of pulse-arrival times between near-frequency streams — the rhythmic cousin of acoustic beating. True Hz-scale continuous-tone beating is deferred to v0.1 (see §8).
 
 ---
 
@@ -179,7 +187,7 @@ All tasks return short text (one sentence to a small JSON blob). Each task type 
 **In:** clip + goal (e.g. *"more tension"*, *"stabilize"*, *"create contrast"*).
 **Out:** a single structured action:
 ```json
-{"type": "nudge", "node": 3, "delta_hz": 0.15, "why": "detunes the dominant cluster's anchor, should introduce beating"}
+{"type": "nudge", "node": 3, "delta_hz": 0.15, "why": "detunes the dominant cluster's anchor; should introduce phase-beating between the two streams"}
 ```
 Evaluated by actually applying the intervention — see §7 L3.
 
@@ -266,7 +274,7 @@ Rationale: nothing can be trained or evaluated without ground-truth data, and th
 
 1. `python -m sim.run --config configs/regime_drifting.yaml --seed 42 --out runs/demo` produces `audio.wav`, `state.npz`, `events.jsonl`, `topology.json`, `labels.json`.
 2. **Determinism:** same seed + config → byte-identical `state.npz`.
-3. Detectors implemented for at least `phase_locked`, `drifting`, `polyrhythmic`, `beating`, `dominant_cluster`, `groove`, `groove_collapse`. Remaining ontology entries can land in a follow-up.
+3. Detectors implemented for at least `phase_locked`, `drifting`, `polyrhythmic`, `phase_beating`, `dominant_cluster`, `groove`, `groove_collapse`. Remaining ontology entries can land in a follow-up.
 4. `scripts/generate_dataset.py` produces **200 runs** across ≥4 regime templates, total <500 MB, in <30 min on a laptop.
 5. **Sniff test:** pick 10 random clips blind, listen, read labels. ≥8 should feel right. Record the disagreements in `DIRECTORS_NOTES.md` for a follow-up detector pass.
 6. No ML code yet. Those directories should not exist.
