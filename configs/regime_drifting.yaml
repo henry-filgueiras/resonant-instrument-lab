@@ -5,9 +5,10 @@
 # force schema ambiguities out into the open.
 #
 # Regime shape: low K0 + moderate noise → ensemble should fail to phase-lock.
-# Event schedule exercises all four primary event types (setK, nudge,
-# impulse, move) without changing the regime's overall drifting character.
-# ablate_node is deliberately absent — it is counterfactual-only per §9.5.
+# Event schedule exercises the three executable primary event types (setK,
+# nudge, impulse) without changing the regime's overall drifting character.
+# `move` is currently deferred (see DESIGN_V0.md §9.5) pending pos_t export;
+# `ablate_node` is counterfactual-only and not used in primary configs.
 
 version: 1
 
@@ -44,7 +45,6 @@ run:
   seed: 42
 
 events:
-  - {t: 2.00, type: setK,    K0: 0.18}                        # still sub-lock
-  - {t: 4.50, type: nudge,   node: 3, delta_hz: 0.25}         # small retune
-  - {t: 5.75, type: impulse, node: 5}                         # phase reset
-  - {t: 6.90, type: move,    node: 2, delta_pos: [0.02, -0.03]}
+  - {t: 2.00, type: setK,    K0: 0.18}                  # still sub-lock
+  - {t: 4.50, type: nudge,   node: 3, delta_hz: 0.25}   # small retune
+  - {t: 5.75, type: impulse, node: 5}                   # phase reset

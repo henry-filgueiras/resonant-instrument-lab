@@ -62,17 +62,19 @@ The point is not that a tiny LM will out-compose anyone. The point is that a tin
 Kuramoto-style phase coupling with a distance kernel:
 
 ```
-dθᵢ/dt = ωᵢ + Σⱼ Kᵢⱼ · sin(θⱼ − θᵢ) + ξᵢ(t)
+dθᵢ/dt = 2π·fᵢ + Σⱼ Kᵢⱼ · sin(θⱼ − θᵢ) + ξᵢ(t)
 Kᵢⱼ    = K₀ · exp(−dᵢⱼ / σ)
 ```
 
-Amplitude is a driven relaxation: `dAᵢ/dt = −γᵢ·Aᵢ + pulse_input`, with pulses firing on phase-zero crossings.
+Units. `fᵢ` is the node's `omega_0_hz` in Hz (promoted to rad/s by 2π inside the integrator); `K₀` is in rad/s; `σ` is a distance in unit-square position units; `ξᵢ(t)` is Gaussian white noise with intensity `η` in rad/√s. The integrator uses explicit Euler at `dt = 1 / control_rate_hz`; noise is discretized as `η · √dt · 𝒩(0,1)` per step.
+
+Amplitude is a driven relaxation: `dAᵢ/dt = −γᵢ·Aᵢ + pulse_input`, with pulses firing on phase-zero crossings. (Amplitude dynamics are currently stubbed to constant 1.0; γ is accepted but unused — see §9.)
 
 Knobs that matter:
 
-- `K₀` — global coupling scalar. The most important knob; sweeping it crosses regime boundaries.
+- `K₀` — global coupling scalar (rad/s). The most important knob; sweeping it crosses regime boundaries.
 - `σ` — coupling range; controls whether geometry matters.
-- `η` — optional white noise amplitude on `ξᵢ(t)`.
+- `η` — optional white-noise intensity on `ξᵢ(t)` (rad/√s); `η = 0` disables.
 
 ### 2.3 Audio rendering
 
@@ -343,8 +345,9 @@ Event types (v0, closed set):
 - `setK` — `{K0: float}`
 - `nudge` — `{node: int, delta_hz: float}` — modifies `omega_0_hz[node]` permanently from `t`
 - `impulse` — `{node: int}` — sets `theta[node] = 0` at `t`
-- `move` — `{node: int, delta_pos: [dx, dy]}` — modifies position (affects coupling kernel from `t`)
 - `ablate_node` — `{node: int}` — sets `A[node] = 0` and zeros coupling to/from node for remainder of run (counterfactual only; not used in primary-generation configs)
+
+**Deferred.** `move` — `{node: int, delta_pos: [dx, dy]}` — would modify position mid-run, but v0 has no `pos_t: (T, N, 2)` field in `state.npz`, so accepting move events would silently lie to detectors about the geometry the coupling kernel sees. The schema validator rejects `move` with an `unknown event type` error. Reintroduce when a position time series is added to §9.3.
 
 ### 9.6 Output artifact layout
 
@@ -396,7 +399,7 @@ cfg = load("configs/regime_drifting.yaml")
 simulate(cfg, "runs/demo", config_path="configs/regime_drifting.yaml")
 ```
 
-Implemented today: config validation, run pipeline with stub dynamics (no pairwise coupling; per-node intrinsic-rate phase advance; constant amplitude; silent but contract-correct stereo WAV). Everything under `sim.ablate` and `sim.detect` is still contract-only.
+Implemented today: config validation; run pipeline with real distance-weighted Kuramoto coupling per §2.2 (explicit Euler at `dt = 1 / control_rate_hz`; SDE noise at intensity `η`); `setK`, `nudge`, and `impulse` events wired into integration. Still stubbed: amplitude dynamics (constant 1.0), audio rendering (silent but format-correct). `ablate_node` is accepted by the schema but has no effect at runtime (the counterfactual path will live in `sim.ablate`). `move` is schema-rejected pending `pos_t` export (§9.5).
 
 Programmatic:
 

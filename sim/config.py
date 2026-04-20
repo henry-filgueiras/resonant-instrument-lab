@@ -18,11 +18,14 @@ NODE     = {"pos", "omega_0_hz", "gamma", "voice"}
 COUPLING = {"K0", "sigma"}
 NOISE    = {"eta"}
 RUN      = {"duration_s", "control_rate_hz", "audio_rate_hz", "seed"}
+# `move` is deferred — see DESIGN_V0.md §9.5. Until pos_t is exported
+# in state.npz, accepting `move` events would silently lie to detectors
+# about mid-run geometry. Rejecting it at the schema layer is the honest
+# choice for v0. Reintroduce when the export lands.
 EVENT_SHAPES = {
     "setK":        {"t", "type", "K0"},
     "nudge":       {"t", "type", "node", "delta_hz"},
     "impulse":     {"t", "type", "node"},
-    "move":        {"t", "type", "node", "delta_pos"},
     "ablate_node": {"t", "type", "node"},
 }
 
@@ -115,8 +118,6 @@ def validate(doc):
             _num(f"{p}.K0", ev["K0"], lo=0.0)
         elif et == "nudge":
             _num(f"{p}.delta_hz", ev["delta_hz"])
-        elif et == "move":
-            _pair(f"{p}.delta_pos", ev["delta_pos"])
 
 
 def load(path):

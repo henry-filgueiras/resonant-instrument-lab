@@ -46,12 +46,14 @@ Real-time interaction, audio-rate tone coupling, GNNs, RLHF, third-party music d
 - Per-label reference — `ONTOLOGY.md` at repo root.
 
 ### First implemented artifacts
-- `sim/config.py` — config loader + validator; shared by the validator CLI and the run pipeline.
-- `sim/garden.py` — contract-honoring stub simulator (no pairwise coupling; per-node intrinsic-rate phase advance; constant amplitude; silent-but-correct stereo WAV). Purpose is shape and determinism, not physics.
+- `sim/config.py` — config loader + validator; shared by the validator CLI and the run pipeline. Executable event set: `setK`, `nudge`, `impulse`, `ablate_node`. `move` is schema-rejected pending `pos_t` export.
+- `sim/garden.py` — real distance-weighted Kuramoto integrator per §2.2 (explicit Euler, SDE noise). Amplitude and audio remain stubbed to constant 1.0 and silent-but-format-correct WAV.
 - `sim/__init__.py` — re-exports `load`, `validate`, `simulate`, `ConfigError`, `SCHEMA_VERSION`.
 - `scripts/validate_config.py` — thin CLI wrapping `sim.config.load`.
 - `scripts/run_sim.py` — run one config end-to-end; writes the full §9.6 artifact set to `--out`.
-- `configs/regime_drifting.yaml` — the DRIFTING-regime reference config, exercising every schema field.
+- `tests/test_locking.py` — first automated smoke test; asserts last-second mean and min Kuramoto `r` for `regime_locked.yaml` exceed the `phase_locked` threshold of 0.9.
+- `configs/regime_drifting.yaml` — DRIFTING reference (low K0, drifted behaviour).
+- `configs/regime_locked.yaml` — LOCKED reference; tuned so the smoke test reliably sees `r > 0.99`.
 - `requirements.txt` — `numpy>=2.0`, `pyyaml>=6.0`.
 - `.gitignore` — excludes `runs/` outputs and Python bytecode.
 
@@ -116,3 +118,15 @@ Thinnest possible executable pipeline. Still no real dynamics; still no detector
 - **Deferred contract gap flagged: position time series is not exported.** `move` events change geometry but §9.3 does not include a `pos_t` field, so a detector that needs mid-run positions has no signal to read. The scaffold logs move events faithfully to `events.jsonl` and leaves this for a follow-up contract pass (either add `pos_t: (T, N, 2)` to `state.npz`, or declare positions static-after-t0 and forbid `move` events). **Not resolved in this pass — `move` events are recorded but have no effect on exported state.**
 - **`requirements.txt` added** (deps threshold crossed: PyYAML + NumPy). `numpy>=2.0` chosen for Python 3.14 support; `pyyaml>=6.0` carried forward.
 - **Smoke test done and torn down.** Validator + two runs + byte-diff + nudge-effect sanity check in a throwaway venv; test fixtures deleted before commit. The scaffold is the artifact, not the test runs.
+
+### 2026-04-20 — Claude Opus 4.7 (doc pass 6 — real coupling + first smoke test)
+Replaced the stub phase integration with real distance-weighted Kuramoto coupling. Added the LOCKED reference config and a minimal automated smoke test. Resolved the `move`-event truth gap by removing `move` from the executable schema.
+
+- **Real coupling live.** `sim/garden.py` now integrates §2.2 exactly: `dθ/dt = 2π·f + Σ Kᵢⱼ sin(θⱼ−θᵢ) + ξ`, with `Kᵢⱼ = K₀ · exp(−dᵢⱼ/σ)` (zero diagonal) precomputed once from static positions and rescaled by `K₀` on every `setK` event. Explicit Euler at `dt = 1 / control_rate_hz`. Noise is Ito-discretized as `η · √dt · 𝒩(0,1)`; `η = 0` skips the RNG draw so noise-off runs consume identical RNG state whatever the config. Determinism preserved — two back-to-back runs of `regime_locked.yaml` produced byte-identical `state.npz`, `events.jsonl`, `topology.json`, `audio.wav`, and `config.yaml`.
+- **Units pinned in §2.2.** Writing real dynamics forced the question. `fᵢ = omega_0_hz` in Hz (promoted to 2π·f in the integrator); `K₀` in rad/s; `σ` in unit-square distance; `η` in rad/√s. The contract had been silent on most of these; the clarification is now load-bearing and documented inline.
+- **`move`-event truth gap — chose Option B (remove).** Reasoning: making `move` real is not cheap — it requires a new `pos_t: (T, N, 2)` field in `state.npz`, a `K_mat` rebuild on every move event, and an audio-pan-tracking decision. That is a full contract extension. The honest minimum was dropping `move` from `EVENT_SHAPES` in `sim/config.py`, removing the move event from `configs/regime_drifting.yaml`, and marking §9.5 "Deferred" for `move` with a pointer back to `pos_t`. The validator now emits `unknown event type 'move'; allowed [ablate_node, impulse, nudge, setK]` on any config that still references it. Reintroduce when `pos_t` lands.
+- **`ablate_node` asymmetry acknowledged.** Kept in the schema even though `sim/garden.py` ignores it at runtime. Reasoning: `ablate_node` is the canonical counterfactual perturbation primitive for the future `sim.ablate` path (§10.10). Removing it would require re-adding later; leaving it inert is forward-compatible. `move` was different — its inertness was a contract hole, not a future feature.
+- **LOCKED reference config — `configs/regime_locked.yaml`.** Eight nodes clustered near (0.5, 0.5), ω∈[2.00, 2.40] Hz (Δω in angular terms ≈ 2.5 rad/s), `K₀ = 1.50 rad/s` through a σ = 0.30 kernel. At the typical 0.10–0.15 pair spacing each node sees ~6–7 rad/s of total coupling — well above the Kuramoto bifurcation. Measured `r = 0.9953` over the last 1.0 s of the run. Zero events, zero noise; ω is static.
+- **First automated test — `tests/test_locking.py`.** Runs `regime_locked.yaml` through `sim.simulate` into a tempdir, loads `state.npz`, computes `r(t) = |mean(exp(iθ))|`, and asserts both `mean(r_{last 1s}) > 0.9` and `min(r_{last 1s}) > 0.85`. Stdlib-only (no pytest dependency); runnable as `python tests/test_locking.py` or discoverable via `pytest`. Observed lock is so tight that the margin above threshold is > 0.09 — robust to small numerical variation.
+- **Cross-checked that DRIFTING still drifts.** Sanity-running `configs/regime_drifting.yaml` through the real integrator: last-1s mean `r = 0.267`, below the `drifting` detector's `r_drift = 0.3` — parameters still honour their regime label after the coupling change.
+- **Not done in this pass.** Amplitude dynamics (γ still unused); audio grain synthesis (still silent); `ablate_node` runtime handling; any further regime configs. Deliberately scoped out per the user's guardrails.

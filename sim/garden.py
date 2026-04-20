@@ -1,17 +1,21 @@
-"""v0 Coupled Oscillator Garden — contract-honoring stub.
+"""v0 Coupled Oscillator Garden — real distance-weighted Kuramoto dynamics.
 
-Intentionally NOT a physics simulator yet. This module honours the shape
-contracts of DESIGN_V0.md §9 (export schemas + determinism) so the
-detector layer, dataset pipeline, and real dynamics can land in clean
-seams without rewriting the artifact plumbing.
+Integrates DESIGN_V0.md §2.2:
 
-Stubbed behaviour:
-- no pairwise coupling; each node advances at its intrinsic rate
-- amplitude is constant 1.0
-- move events have no dynamical effect (position-time-series is a
-  deferred contract gap — see DIRECTORS_NOTES.md)
-- ablate_node events have no effect
-- audio is silent at the contract-specified duration, rate, channel count
+    dθᵢ/dt = 2π·fᵢ + Σⱼ Kᵢⱼ · sin(θⱼ − θᵢ) + ξᵢ(t)
+    Kᵢⱼ    = K₀ · exp(−dᵢⱼ / σ)
+
+Units: `fᵢ = omega_0_hz` in Hz (promoted to rad/s by 2π); `K₀` is in
+rad/s; `σ` is in unit-square distance; `ξᵢ(t)` is Gaussian white noise
+with intensity `η` (rad/√s), discretized as `η · √dt · 𝒩(0,1)` per step.
+Explicit Euler step with `dt = 1 / control_rate_hz`.
+
+Still stubbed:
+- amplitude is constant 1.0 (γ is accepted in config but unused)
+- audio is silent-but-format-correct
+- `ablate_node` events are accepted by the schema but have no effect
+  at runtime (the counterfactual path will live in sim.ablate)
+- `move` events are rejected at the schema layer (sim/config.py)
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
 
 def simulate(cfg, out_dir, config_path=None):
-    """Run the stub simulation for `cfg` and write artifacts to `out_dir`.
+    """Run the simulator for `cfg` and write artifacts to `out_dir`.
 
     `cfg` must already be validated (pass it through sim.config.load).
     `config_path`, if given, is copied verbatim to out_dir/config.yaml.
@@ -45,9 +49,23 @@ def simulate(cfg, out_dir, config_path=None):
 
     T = int(round(duration_s * control_rate_hz)) + 1
     dt = 1.0 / control_rate_hz
+    sqrt_dt = np.sqrt(dt)
+    two_pi = 2.0 * np.pi
 
     nodes = cfg["scene"]["nodes"]
+    positions = np.array([n["pos"] for n in nodes], dtype=np.float64)
     omega = np.array([n["omega_0_hz"] for n in nodes], dtype=np.float64)
+
+    sigma = float(cfg["scene"]["coupling"]["sigma"])
+    eta = float(cfg["scene"]["noise"]["eta"])
+    current_K0 = float(cfg["scene"]["coupling"]["K0"])
+
+    # Distance-kernel shape (static in v0 now that `move` is rejected).
+    D = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
+    K_shape = np.exp(-D / sigma)
+    np.fill_diagonal(K_shape, 0.0)
+    K_mat = current_K0 * K_shape
+
     rng = np.random.default_rng(seed)
     theta0 = rng.uniform(-np.pi, np.pi, size=N)
 
@@ -59,25 +77,39 @@ def simulate(cfg, out_dir, config_path=None):
 
     theta = np.zeros((T, N), dtype=np.float64)
     K0_t = np.zeros(T, dtype=np.float64)
-    current_K0 = float(cfg["scene"]["coupling"]["K0"])
     current_omega = omega.copy()
 
     theta[0] = theta0
     for ev in ev_by_idx.get(0, []):
         et = ev["type"]
-        if et == "setK":      current_K0 = float(ev["K0"])
-        elif et == "nudge":   current_omega[ev["node"]] += float(ev["delta_hz"])
-        elif et == "impulse": theta[0, ev["node"]] = 0.0
+        if et == "setK":
+            current_K0 = float(ev["K0"])
+            K_mat = current_K0 * K_shape
+        elif et == "nudge":
+            current_omega[ev["node"]] += float(ev["delta_hz"])
+        elif et == "impulse":
+            theta[0, ev["node"]] = 0.0
     K0_t[0] = current_K0
 
-    two_pi = 2.0 * np.pi
     for k in range(1, T):
-        theta[k] = theta[k-1] + two_pi * current_omega * dt
+        theta_prev = theta[k-1]
+        # diff[i, j] = theta_j - theta_i
+        diff = theta_prev[None, :] - theta_prev[:, None]
+        coupling = (K_mat * np.sin(diff)).sum(axis=1)
+        rate = two_pi * current_omega + coupling
+        if eta > 0.0:
+            theta[k] = theta_prev + rate * dt + eta * sqrt_dt * rng.standard_normal(N)
+        else:
+            theta[k] = theta_prev + rate * dt
         for ev in ev_by_idx.get(k, []):
             et = ev["type"]
-            if et == "setK":      current_K0 = float(ev["K0"])
-            elif et == "nudge":   current_omega[ev["node"]] += float(ev["delta_hz"])
-            elif et == "impulse": theta[k, ev["node"]] = 0.0
+            if et == "setK":
+                current_K0 = float(ev["K0"])
+                K_mat = current_K0 * K_shape
+            elif et == "nudge":
+                current_omega[ev["node"]] += float(ev["delta_hz"])
+            elif et == "impulse":
+                theta[k, ev["node"]] = 0.0
         K0_t[k] = current_K0
 
     theta_w = (theta + np.pi) % two_pi - np.pi
