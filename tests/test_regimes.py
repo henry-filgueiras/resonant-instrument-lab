@@ -22,10 +22,10 @@ import numpy as np  # noqa: E402
 
 from sim import load, simulate  # noqa: E402
 from sim.derived import (  # noqa: E402
+    cluster_assignments,
     kuramoto_order,
     local_kuramoto_order,
     mean_phase_velocity,
-    split_by_largest_velocity_gap,
     sustained_windows,
 )
 
@@ -74,31 +74,31 @@ def test_two_cluster_regime_shows_bimodal_structure():
         f"expected middle-band coherence (0.35 < tail mean r < 0.85), got {r_mean:.4f}"
     )
 
-    # (2) per-node mean phase velocity splits bimodally.
+    # (2) per-node mean phase velocity splits bimodally into two coherent groups.
     v_per_node = mean_phase_velocity(art["phase_vel"], start_idx=-n_tail)
-    split = split_by_largest_velocity_gap(v_per_node)
-    assert split.bimodal_ratio > 3.0, (
-        f"expected bimodal velocity structure (gap >> next), "
-        f"got gap={split.gap:.3f}, ratio={split.bimodal_ratio:.1f}"
+    clusters = cluster_assignments(v_per_node, n_clusters=2)
+    assert clusters.separability_ratio > 3.0, (
+        f"expected clean bimodal split (selected gap >> remaining gaps), "
+        f"got separability_ratio = {clusters.separability_ratio:.1f}"
     )
 
     # (3) the split is roughly balanced (4+4 expected, 3+5 tolerated).
-    low_count = len(split.low_indices)
-    high_count = len(split.high_indices)
-    assert abs(low_count - high_count) <= 2, (
-        f"expected roughly balanced split, got {low_count}+{high_count}"
+    slow, fast = clusters.members
+    slow_count, fast_count = len(slow), len(fast)
+    assert abs(slow_count - fast_count) <= 2, (
+        f"expected roughly balanced split, got {slow_count}+{fast_count}"
     )
 
     # (4) each sub-cluster is internally coherent in the tail.
-    r_lo = float(local_kuramoto_order(theta_tail, split.low_indices).mean())
-    r_hi = float(local_kuramoto_order(theta_tail, split.high_indices).mean())
-    assert r_lo > 0.8 and r_hi > 0.8, (
-        f"expected intra-cluster lock (r > 0.8 each), got r_lo={r_lo:.3f}, r_hi={r_hi:.3f}"
+    r_slow = float(local_kuramoto_order(theta_tail, slow).mean())
+    r_fast = float(local_kuramoto_order(theta_tail, fast).mean())
+    assert r_slow > 0.8 and r_fast > 0.8, (
+        f"expected intra-cluster lock (r > 0.8 each), got r_slow={r_slow:.3f}, r_fast={r_fast:.3f}"
     )
 
     print(
-        f"ok: two_cluster — tail mean r = {r_mean:.4f}, split = {low_count}+{high_count}, "
-        f"intra r = ({r_lo:.3f}, {r_hi:.3f}), bimodal ratio = {split.bimodal_ratio:.1f}"
+        f"ok: two_cluster — tail mean r = {r_mean:.4f}, split = {slow_count}+{fast_count}, "
+        f"intra r = ({r_slow:.3f}, {r_fast:.3f}), separability = {clusters.separability_ratio:.1f}"
     )
 
 

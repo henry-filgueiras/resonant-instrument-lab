@@ -105,77 +105,141 @@ def mean_phase_velocity(phase_vel, start_idx=None, end_idx=None):
     return window.mean(axis=0)
 
 
-class VelocitySplit(NamedTuple):
-    """Result of `split_by_largest_velocity_gap`.
+class ClusterAssignments(NamedTuple):
+    """Result of `cluster_assignments`.
 
-    Index arrays are sorted by node index (not by velocity) so they read
-    naturally as membership sets.
+    Clusters are ordered ascending by mean-velocity centroid — cluster 0
+    is the slowest-drifting group, cluster `k-1` the fastest. `members[i]`
+    is sorted by node index (not by velocity) so each entry reads as a
+    plain membership set.
     """
 
-    low_indices: np.ndarray     # (k,) — nodes below the gap
-    high_indices: np.ndarray    # (N-k,) — nodes above the gap
-    gap: float                  # magnitude of the largest adjacent gap in sorted velocities
-    bimodal_ratio: float        # gap / next-largest-gap; inf if only one gap exists; 0.0 if all gaps zero
+    labels: np.ndarray                  # (N,) int — cluster id per node, in {0, …, k-1}
+    members: tuple                      # k-tuple of np.ndarray[int], sorted by node index
+    separability_ratio: float           # min(selected_gaps) / max(unselected_gaps); see docstring
 
 
-def split_by_largest_velocity_gap(mean_vel):
-    """Partition nodes into two groups at the largest adjacent gap in sorted mean velocities.
+def cluster_assignments(mean_vel, n_clusters):
+    """Partition `N` nodes into `n_clusters` groups by the `n_clusters - 1` largest
+    adjacent gaps in the sorted `mean_vel` array.
 
-    Bare-minimum bimodality test, **not** a general clustering algorithm.
-    Use only when the physics is expected to produce one dominant gap
-    (e.g. the TWO_CLUSTER regime); do not use as a substitute for the
-    eventual multi-regime `cluster_assignments` helper.
+    This is the minimum-useful clustering primitive for the garden: the
+    physics of coupled oscillators makes coherent groups share a common
+    mean phase velocity (each cluster's collective rotation rate), so a
+    1D gap-based split on per-node mean velocity is the honest and
+    deterministic thing to do at `N = 8`. It generalizes the earlier k=2
+    special case (`split_by_largest_velocity_gap`, now removed) to
+    arbitrary `n_clusters` without pulling in sklearn-grade machinery.
+
+    Why a derived-state primitive, not an ontology commitment:
+    this helper does **not** decide *how many* clusters exist — the
+    caller does. It does not threshold, label, or emit detector
+    confidence. It only answers "given that you want `k` groups over a
+    1D velocity array, here is the partition with the largest inter-group
+    gaps and a scalar measure of how clean the split is".
 
     Parameters
     ----------
-    mean_vel : np.ndarray
-        Shape `(N,)`, `N ≥ 2`. Typically the output of `mean_phase_velocity`.
+    mean_vel : array-like, shape `(N,)`
+        Per-node mean phase velocity. Typically the output of
+        `mean_phase_velocity(phase_vel, start_idx, end_idx)`.
+    n_clusters : int, `1 <= n_clusters <= N`
+        Desired number of groups. `n_clusters == 1` is a valid
+        degenerate call — all nodes in one cluster.
 
     Returns
     -------
-    VelocitySplit
-        `low_indices` and `high_indices` are sorted ascending by node
-        index. `gap` is the absolute size of the selected split. `bimodal_ratio`
-        is `gap / next_largest_gap` (or `+inf` when only one gap exists).
+    ClusterAssignments
+        - `labels`: `(N,)` int array of cluster ids (`0 <= labels[i] < n_clusters`).
+        - `members`: `n_clusters`-tuple of int arrays, each sorted by
+          node index. Clusters are ordered ascending by mean-velocity
+          centroid (`members[0]` is the slowest group).
+        - `separability_ratio`: scalar diagnostic on how clean the split
+          is — `min(selected_gaps) / max(unselected_gaps)`. Large values
+          mean the chosen inter-cluster boundaries are much wider than
+          any remaining intra-cluster gap. Edge values:
+            * `n_clusters == 1`: `+inf` (no inter-cluster boundaries to weaken).
+            * `n_clusters == N`: `+inf` if any selected gap is positive, else `0.0`.
+            * all velocities identical: `0.0` (all gaps are zero).
 
     Raises
     ------
     ValueError
-        If `mean_vel` is not 1D or has fewer than 2 elements.
+        If `mean_vel` is not 1D, is empty, or `n_clusters` is outside
+        `[1, N]`.
 
-    Determinism note
-    ----------------
-    `np.argsort` is called with `kind="stable"` and `np.argmax` returns
-    the first (smallest-index) maximum on ties, so the output is a pure
-    function of the input values and ordering.
+    Determinism & tie-breaking
+    --------------------------
+    - Sorting nodes by velocity uses `np.argsort(kind="stable")`, so
+      nodes with identical velocities keep their node-index order.
+    - Gap selection sorts gaps in descending order via
+      `np.argsort(-gaps, kind="stable")`, which breaks ties between
+      equal-magnitude gaps in favor of the one with the smaller
+      position in the sorted-velocity axis (i.e. the earlier/slower
+      boundary wins). This is deterministic for any fixed input; near-
+      identical gaps are sensitive to input precision, as with any gap
+      heuristic.
+
+    Scope
+    -----
+    1D velocity signal only. Phase-based sub-clustering inside a
+    velocity-homogeneous group (e.g. anti-phase clusters locked at the
+    same rotation rate) is deferred — not needed by any current or
+    near-term detector.
     """
     mean_vel = np.asarray(mean_vel)
     if mean_vel.ndim != 1:
         raise ValueError(f"mean_vel must be 1D, got shape {mean_vel.shape}")
-    if mean_vel.shape[0] < 2:
-        raise ValueError(f"need at least 2 nodes to split, got {mean_vel.shape[0]}")
+    N = mean_vel.shape[0]
+    if N < 1:
+        raise ValueError("mean_vel must contain at least one node")
+    if not isinstance(n_clusters, (int, np.integer)) or isinstance(n_clusters, bool):
+        raise ValueError(f"n_clusters must be an int, got {type(n_clusters).__name__}")
+    if n_clusters < 1 or n_clusters > N:
+        raise ValueError(f"n_clusters must be in [1, N={N}], got {n_clusters}")
 
     order = np.argsort(mean_vel, kind="stable")
     v_sorted = mean_vel[order]
-    gaps = np.diff(v_sorted)
-    split_at = int(np.argmax(gaps))
-    max_gap = float(gaps[split_at])
+    gaps = np.diff(v_sorted)  # shape (N-1,); empty if N == 1
 
-    other = np.delete(gaps, split_at)
-    if other.size == 0:
-        ratio = float("inf") if max_gap > 0.0 else 0.0
+    n_selected = n_clusters - 1
+    if n_selected == 0:
+        selected_positions = np.empty(0, dtype=np.intp)
     else:
-        max_other = float(other.max())
-        if max_other > 0.0:
-            ratio = max_gap / max_other
-        elif max_gap > 0.0:
-            ratio = float("inf")
-        else:
-            ratio = 0.0
+        ranking = np.argsort(-gaps, kind="stable")
+        selected_positions = np.sort(ranking[:n_selected])
 
-    low = np.sort(order[: split_at + 1])
-    high = np.sort(order[split_at + 1 :])
-    return VelocitySplit(low_indices=low, high_indices=high, gap=max_gap, bimodal_ratio=ratio)
+    # Split sorted order into n_clusters contiguous slices at the selected positions.
+    boundaries = np.concatenate(([0], selected_positions + 1, [N]))
+    members = tuple(
+        np.sort(order[boundaries[i]:boundaries[i + 1]])
+        for i in range(n_clusters)
+    )
+
+    labels = np.empty(N, dtype=np.int64)
+    for i, m in enumerate(members):
+        labels[m] = i
+
+    if n_selected == 0:
+        sep = float("inf")
+    else:
+        selected_gaps = gaps[selected_positions]
+        min_sel = float(selected_gaps.min())
+        mask = np.ones(gaps.shape[0], dtype=bool)
+        mask[selected_positions] = False
+        unselected = gaps[mask]
+        if unselected.size == 0:
+            sep = float("inf") if min_sel > 0.0 else 0.0
+        else:
+            max_unsel = float(unselected.max())
+            if max_unsel > 0.0:
+                sep = min_sel / max_unsel
+            elif min_sel > 0.0:
+                sep = float("inf")
+            else:
+                sep = 0.0
+
+    return ClusterAssignments(labels=labels, members=members, separability_ratio=sep)
 
 
 def sustained_windows(condition, min_duration_frames, hysteresis_frames=0):
