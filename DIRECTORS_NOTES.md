@@ -51,9 +51,10 @@ Real-time interaction, audio-rate tone coupling, GNNs, RLHF, third-party music d
 - `sim/__init__.py` — re-exports `load`, `validate`, `simulate`, `ConfigError`, `SCHEMA_VERSION`.
 - `scripts/validate_config.py` — thin CLI wrapping `sim.config.load`.
 - `scripts/run_sim.py` — run one config end-to-end; writes the full §9.6 artifact set to `--out`.
-- `tests/test_locking.py` — first automated smoke test; asserts last-second mean and min Kuramoto `r` for `regime_locked.yaml` exceed the `phase_locked` threshold of 0.9.
-- `configs/regime_drifting.yaml` — DRIFTING reference (low K0, drifted behaviour).
-- `configs/regime_locked.yaml` — LOCKED reference; tuned so the smoke test reliably sees `r > 0.99`.
+- `tests/test_regimes.py` — automated regime smoke tests (one function per regime fixture). Runs each config through `sim.simulate` into a tempdir and asserts a simple numerical signature of the regime label. Stdlib-only; runnable via `python tests/test_regimes.py` or `pytest`.
+- `configs/regime_drifting.yaml` — DRIFTING reference (low K0, drifted behaviour; measured tail mean `r ≈ 0.27`).
+- `configs/regime_locked.yaml` — LOCKED reference; test asserts last-1s `r > 0.9`, observed `r = 0.9953`.
+- `configs/regime_two_cluster.yaml` — TWO_CLUSTER reference; test asserts middle-band global `r` + bimodal velocity split + intra-cluster coherence. Observed tail mean `r = 0.628`, clean 4+4 split with bimodal ratio ~700.
 - `requirements.txt` — `numpy>=2.0`, `pyyaml>=6.0`.
 - `.gitignore` — excludes `runs/` outputs and Python bytecode.
 
@@ -130,3 +131,17 @@ Replaced the stub phase integration with real distance-weighted Kuramoto couplin
 - **First automated test — `tests/test_locking.py`.** Runs `regime_locked.yaml` through `sim.simulate` into a tempdir, loads `state.npz`, computes `r(t) = |mean(exp(iθ))|`, and asserts both `mean(r_{last 1s}) > 0.9` and `min(r_{last 1s}) > 0.85`. Stdlib-only (no pytest dependency); runnable as `python tests/test_locking.py` or discoverable via `pytest`. Observed lock is so tight that the margin above threshold is > 0.09 — robust to small numerical variation.
 - **Cross-checked that DRIFTING still drifts.** Sanity-running `configs/regime_drifting.yaml` through the real integrator: last-1s mean `r = 0.267`, below the `drifting` detector's `r_drift = 0.3` — parameters still honour their regime label after the coupling change.
 - **Not done in this pass.** Amplitude dynamics (γ still unused); audio grain synthesis (still silent); `ablate_node` runtime handling; any further regime configs. Deliberately scoped out per the user's guardrails.
+
+### 2026-04-20 — Claude Opus 4.7 (doc pass 7 — intermediate regime fixture)
+Added the first intermediate-regime fixture and the numerical sanity test that confirms the simulator produces more than just "drift" and "full lock".
+
+- **Tuning logic for `configs/regime_two_cluster.yaml`.** Two groups of four nodes clustered at ≈(0.25, 0.46) and ≈(0.75, 0.46); inter-centroid distance 0.5. Chose `σ = 0.15` so the distance kernel itself does most of the work: `exp(-0.10/0.15) ≈ 0.51` intra vs `exp(-0.50/0.15) ≈ 0.036` inter — a ~14× ratio. `K₀ = 2.0 rad/s` puts per-node intra-cluster coupling at ~3 rad/s (safely above the 1.26 rad/s intra-Δω, so each group locks) and per-node cross-cluster coupling at ~0.29 rad/s (far below the 5.53 rad/s inter-mean-ω gap, so groups stay separate). Bimodal ω: group A in `[2.00, 2.20]` Hz, group B in `[2.90, 3.10]` Hz, giving a drift period `≈ 1.13 s`.
+- **Assertion shape in `tests/test_regimes.py::test_two_cluster_regime_shows_bimodal_structure`.** Four checks on a 3-second tail window (≈ 2.6 drift periods, enough for a stable time-average of the oscillating global `r`):
+  1. Global Kuramoto `r` tail mean in `(0.35, 0.85)` — rejects both drift and global lock.
+  2. Per-node mean phase velocity splits: the largest adjacent gap in the sorted velocity array dominates the others by at least 3× (measured ratio: **706.4**).
+  3. The split is roughly balanced (4+4 tolerated, 3+5 still accepted). Observed: exact 4+4.
+  4. Each sub-cluster's own local Kuramoto `r` exceeds 0.8. Observed: 0.993 / 0.993.
+- **Predicted vs measured tail `r`.** For two internally-locked clusters drifting linearly apart, `r_global(t) = r_intra · |cos((φ_A − φ_B)/2)|`, so the time-average is `E[r_global] ≈ (2/π) · r_intra ≈ 0.637 · 0.993 = 0.632`. Measured: **0.6276**. Within 1%.
+- **Test file consolidated: `tests/test_locking.py` → `tests/test_regimes.py`.** Both regime tests now live in one file with a shared `_run(config_path)` helper and a shared `_kuramoto(theta)` utility. The consolidation is forward-looking: future regime fixtures (`BRITTLE`, `SWEEP`, `PERTURBED`, `COLLAPSE`) will land here as additional `test_*` functions rather than spawning one file per fixture.
+- **Sanity check on DRIFTING.** Not retested in this pass beyond what doc pass 6 already measured (tail mean `r = 0.267`). DRIFTING remains covered by the implicit test-via-validator-and-run; not worth adding a dedicated numerical test for "this config fails to lock" until we have a detector framework to test against.
+- **What is still not done.** No detector framework. No clustering / DBSCAN machinery — the test uses `np.argsort` + `np.diff` on eight per-node mean velocities, which is robust specifically because the physics produces a dominant single gap. When the detector layer lands, it will need a more general cluster-assignment helper (`sim.derived.cluster_assignments`, per §9.8); this test deliberately does not prototype that.
