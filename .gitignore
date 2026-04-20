@@ -1,0 +1,8 @@
+# Simulator outputs — see DESIGN_V0.md §9.6.
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

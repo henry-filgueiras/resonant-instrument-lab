@@ -382,13 +382,21 @@ Helpers live in `sim.derived` (or equivalent). They are pure functions of export
 ### 9.9 CLI / API surface (v0)
 
 ```
-python scripts/validate_config.py [PATH]                 # schema check only (implemented)
-python -m sim.run     --config PATH --out DIR [--seed N]
+python scripts/validate_config.py [PATH]                       # implemented
+python scripts/run_sim.py --config PATH --out DIR [--seed N]   # implemented (stub dynamics)
 python -m sim.ablate  --run DIR    --perturbation JSON --out DIR [--seed N]
-python -m sim.detect  --run DIR    [--detectors LIST]      # writes labels.json
+python -m sim.detect  --run DIR    [--detectors LIST]          # writes labels.json
 ```
 
-`validate_config.py` is the first (and currently only) implemented entry point. Everything under `sim.*` is still contract-only.
+Programmatic equivalent of `run_sim`:
+
+```python
+from sim import load, simulate
+cfg = load("configs/regime_drifting.yaml")
+simulate(cfg, "runs/demo", config_path="configs/regime_drifting.yaml")
+```
+
+Implemented today: config validation, run pipeline with stub dynamics (no pairwise coupling; per-node intrinsic-rate phase advance; constant amplitude; silent but contract-correct stereo WAV). Everything under `sim.ablate` and `sim.detect` is still contract-only.
 
 Programmatic:
 

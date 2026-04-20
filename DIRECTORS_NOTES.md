@@ -46,9 +46,14 @@ Real-time interaction, audio-rate tone coupling, GNNs, RLHF, third-party music d
 - Per-label reference — `ONTOLOGY.md` at repo root.
 
 ### First implemented artifacts
-- `configs/regime_drifting.yaml` — hand-authored reference config, the DRIFTING-regime exemplar exercising every schema field.
-- `scripts/validate_config.py` — schema validator for v1 configs; PyYAML-only dependency; precise path-and-value diagnostics on failure; exit 0 on success.
-- Neither writes simulator output; they exist to freeze config shape before dynamics land.
+- `sim/config.py` — config loader + validator; shared by the validator CLI and the run pipeline.
+- `sim/garden.py` — contract-honoring stub simulator (no pairwise coupling; per-node intrinsic-rate phase advance; constant amplitude; silent-but-correct stereo WAV). Purpose is shape and determinism, not physics.
+- `sim/__init__.py` — re-exports `load`, `validate`, `simulate`, `ConfigError`, `SCHEMA_VERSION`.
+- `scripts/validate_config.py` — thin CLI wrapping `sim.config.load`.
+- `scripts/run_sim.py` — run one config end-to-end; writes the full §9.6 artifact set to `--out`.
+- `configs/regime_drifting.yaml` — the DRIFTING-regime reference config, exercising every schema field.
+- `requirements.txt` — `numpy>=2.0`, `pyyaml>=6.0`.
+- `.gitignore` — excludes `runs/` outputs and Python bytecode.
 
 ### First coding milestone
 Simulator + detectors + dataset dump only. **No model code yet.** Acceptance criteria are recorded in `DESIGN_V0.md §11` (renumbered from §9 when the contracts were inserted).
@@ -100,3 +105,14 @@ Turned the §9.2 simulator contract from prose into a machine-checkable pair: a 
 - **Schema range pinning.** §9.2 previously gave units but not range bounds for most fields; `validate_config.py` forced the question. Resolved conservatively: `omega_0_hz ∈ [0.5, 8.0]` (from §2.1), `voice ∈ [0, 7]` (v0's 8-voice palette), `pos` and `gamma` ∈ `[0, 1]`, `K0 ≥ 0`, `sigma > 0` (strict — it divides in the coupling kernel), `eta ≥ 0`. Ranges are now enumerated inline in §9.2 so future detector / sim code cannot drift from them silently.
 - **`sim.run` CLI surface now has a running companion.** §9.9 gained a line pinning `scripts/validate_config.py` as the first implemented entry point; everything under `sim.*` is still contract-only.
 - **PyYAML adopted as the first (and so far only) external dependency.** No `requirements.txt` yet — defer until there are two or more deps. Validator fails fast with a one-line install hint if PyYAML is missing.
+
+### 2026-04-20 — Claude Opus 4.7 (doc pass 5 — first executable scaffold)
+Thinnest possible executable pipeline. Still no real dynamics; still no detectors, ablation, or ML code.
+
+- **Package layout: `sim/` created.** `sim.config` (moved from `scripts/validate_config.py`), `sim.garden` (stub simulator), `sim.__init__` (re-exports). `scripts/validate_config.py` is now a thin CLI over `sim.config.load` — single source of truth for schema validation. Both CLIs prepend the repo root to `sys.path` so they run from a fresh clone with no packaging.
+- **Stub evolution rule: per-node intrinsic-rate phase advance, no coupling.** Chosen over alternatives (zero-motion placeholder; random walk; trivial Kuramoto) because (a) it's genuinely deterministic, (b) it lets `pulse_fired` actually fire at sensible rates so downstream detector scaffolding sees non-trivial data, (c) it makes `nudge` events visible via a phase-velocity change, and (d) the seam where real pairwise coupling goes is a single line inside the main integration loop. Amplitude is constant 1.0, `move` and `ablate_node` events are recorded but have no dynamical effect — clearly marked in the module docstring as stubs.
+- **Artifacts contract honored on disk.** `state.npz`, `events.jsonl`, `topology.json`, `audio.wav`, `config.yaml` all written per §9.6. `state.npz` contains all six §9.3 arrays with correct dtypes and `(T, N)` or `(T,)` shapes. Events include generated `id` (`evt_NNN`) and `source: "scheduled"` fields per §9.5. Audio is silent stereo int16 WAV of the contract-specified duration and rate — contract-correct but explicitly no content.
+- **Byte-level determinism verified.** Two back-to-back runs of the same config produced `cmp -s`-identical `state.npz`, `events.jsonl`, `topology.json`, `audio.wav`, and `config.yaml`. The one non-obvious choice: `.npz` is written as a manually-constructed zip with `ZIP_STORED` and a fixed `(1980,1,1)` date for every entry, because `numpy.savez`'s default path uses wall-clock zip timestamps that break byte-identity. JSON outputs use `sort_keys=True` to pin dict ordering. `config.yaml` is copied verbatim rather than re-emitted.
+- **Deferred contract gap flagged: position time series is not exported.** `move` events change geometry but §9.3 does not include a `pos_t` field, so a detector that needs mid-run positions has no signal to read. The scaffold logs move events faithfully to `events.jsonl` and leaves this for a follow-up contract pass (either add `pos_t: (T, N, 2)` to `state.npz`, or declare positions static-after-t0 and forbid `move` events). **Not resolved in this pass — `move` events are recorded but have no effect on exported state.**
+- **`requirements.txt` added** (deps threshold crossed: PyYAML + NumPy). `numpy>=2.0` chosen for Python 3.14 support; `pyyaml>=6.0` carried forward.
+- **Smoke test done and torn down.** Validator + two runs + byte-diff + nudge-effect sanity check in a throwaway venv; test fixtures deleted before commit. The scaffold is the artifact, not the test runs.
