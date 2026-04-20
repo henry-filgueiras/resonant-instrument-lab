@@ -40,10 +40,15 @@ L1 label accuracy → L2 noise / perturbation robustness → L3 intervention gro
 ### Out of scope for v0
 Real-time interaction, audio-rate tone coupling, GNNs, RLHF, third-party music datasets, human listening studies.
 
-### Implementation contracts (frozen shape, no code yet)
+### Implementation contracts (frozen shape, no engine code yet)
 - Simulator contract — `DESIGN_V0.md §9`. Defines scene vs run, canonical YAML, per-step export schema (`state.npz`), audio rendering, event schema, output artifact layout, determinism rules, derived-state helpers, and the `sim.run` / `sim.ablate` / `sim.detect` surface.
 - Detector contract — `DESIGN_V0.md §10`. Fair-game vs privileged vs eval-only input boundary; output schema; confidence = evidence margin; thresholds in versioned YAML; counterfactual detectors only via `sim.ablate`.
 - Per-label reference — `ONTOLOGY.md` at repo root.
+
+### First implemented artifacts
+- `configs/regime_drifting.yaml` — hand-authored reference config, the DRIFTING-regime exemplar exercising every schema field.
+- `scripts/validate_config.py` — schema validator for v1 configs; PyYAML-only dependency; precise path-and-value diagnostics on failure; exit 0 on success.
+- Neither writes simulator output; they exist to freeze config shape before dynamics land.
 
 ### First coding milestone
 Simulator + detectors + dataset dump only. **No model code yet.** Acceptance criteria are recorded in `DESIGN_V0.md §11` (renumbered from §9 when the contracts were inserted).
@@ -85,3 +90,13 @@ Paperwork-shaped implementation bridge. Still no code.
 - **First coding milestone renumbered §9 → §11.** Acceptance criteria unchanged.
 - **Working convention recorded: simulator must never export "answer" latent fields** (e.g. a hypothetical `is_locked`). Dual-enforced — sim contract forbids writing them, detector contract forbids reading them. This is the single most load-bearing boundary for keeping the detection problem honest.
 - **Known-weak-spot list published in `ONTOLOGY.md`.** `groove`, `flam`, `polyrhythmic`, coarse-`N=8` `dominant_cluster` threshold, and ablation cluster-matching for `unstable_bridge`. Flagged but not reopened — these are sniff-test-driven iterations, not design work.
+
+### 2026-04-20 — Claude Opus 4.7 (doc pass 4 — first implemented artifact)
+Turned the §9.2 simulator contract from prose into a machine-checkable pair: a reference config and a schema validator. Still no simulator dynamics, no detectors, no ML code.
+
+- **Added `configs/regime_drifting.yaml`.** Eight nodes on a rough ring in the unit square, spread of intrinsic frequencies wide enough that low `K0=0.12` plus `eta=0.03` will not lock. Four events (`setK`, `nudge`, `impulse`, `move`) deliberately included to exercise every primary event type in the schema without rescuing the regime. `ablate_node` intentionally absent — it is counterfactual-only per `DESIGN_V0.md §9.5`.
+- **Added `scripts/validate_config.py`.** Stdlib + PyYAML; ~100 lines; closed-set key validation, numeric range and type checks with bool rejection, event-type switch on the §9.5 closed set, ascending-time invariant on events, per-node index bounds. Validated the reference config clean; eight synthetic bad-config cases each produced a path-and-value diagnostic pointing to the exact offender.
+- **Schema resolution: `meta` block added as an optional top-level field** with required `name: str` and optional `notes: str`. Rationale: gave the reference config a place to name its regime and explain itself without filename-as-identity brittleness. Kept out of `topology.json` and other detector-facing exports so it does not leak into §10.2 privileged-truth territory. Updated §9.2 to reflect.
+- **Schema range pinning.** §9.2 previously gave units but not range bounds for most fields; `validate_config.py` forced the question. Resolved conservatively: `omega_0_hz ∈ [0.5, 8.0]` (from §2.1), `voice ∈ [0, 7]` (v0's 8-voice palette), `pos` and `gamma` ∈ `[0, 1]`, `K0 ≥ 0`, `sigma > 0` (strict — it divides in the coupling kernel), `eta ≥ 0`. Ranges are now enumerated inline in §9.2 so future detector / sim code cannot drift from them silently.
+- **`sim.run` CLI surface now has a running companion.** §9.9 gained a line pinning `scripts/validate_config.py` as the first implemented entry point; everything under `sim.*` is still contract-only.
+- **PyYAML adopted as the first (and so far only) external dependency.** No `requirements.txt` yet — defer until there are two or more deps. Validator fails fast with a one-line install hint if PyYAML is missing.

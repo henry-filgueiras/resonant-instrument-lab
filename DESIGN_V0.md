@@ -267,6 +267,10 @@ Implementation-facing. The layer the detector code, data pipeline, and (eventual
 
 ```yaml
 version: 1
+meta:                         # optional; human-readable identity for the config
+  name: regime_drifting
+  notes: >                    # optional string
+    Free-form description, kept out of state/topology exports.
 scene:
   N: 8
   nodes:                      # length must equal N
@@ -283,14 +287,23 @@ run:
   control_rate_hz: 200
   audio_rate_hz: 22050
   seed: 42
-events:                       # optional, sorted by t at load
+events:                       # optional, sorted by t at load; default []
   - {t: 3.0, type: setK,    K0: 1.10}
   - {t: 5.5, type: nudge,   node: 3, delta_hz: 0.15}
   - {t: 6.2, type: impulse, node: 5}
   - {t: 7.0, type: move,    node: 2, delta_pos: [0.05, -0.02]}
 ```
 
-All fields required unless marked optional. Unknown keys are an error, not a warning.
+All fields required unless marked optional. Unknown keys are an error, not a warning. `meta` (if present) is human-facing identity only — it is **not** copied into exported `topology.json` or any other artifact the detector layer reads, which preserves the §10.2 boundary against privileged latent truth.
+
+Concrete ranges (enforced by `scripts/validate_config.py`, see §9.9):
+
+- `version` must equal `1`.
+- `scene.N` integer ≥ 2; `len(scene.nodes) == scene.N`.
+- `node.pos[i]` ∈ `[0.0, 1.0]`; `omega_0_hz` ∈ `[0.5, 8.0]`; `gamma` ∈ `[0.0, 1.0]`; `voice` integer ∈ `[0, 7]` (v0 palette).
+- `coupling.K0 ≥ 0`; `coupling.sigma > 0`; `noise.eta ≥ 0`.
+- `run.duration_s > 0`; `control_rate_hz, audio_rate_hz, seed` integer ≥ 0 (rates ≥ 1).
+- `events[i].t ∈ [0, duration_s]`; `events` sorted ascending by `t`; `node` indices ∈ `[0, N-1]`.
 
 ### 9.3 Per-step exports (control rate)
 
@@ -369,10 +382,13 @@ Helpers live in `sim.derived` (or equivalent). They are pure functions of export
 ### 9.9 CLI / API surface (v0)
 
 ```
+python scripts/validate_config.py [PATH]                 # schema check only (implemented)
 python -m sim.run     --config PATH --out DIR [--seed N]
 python -m sim.ablate  --run DIR    --perturbation JSON --out DIR [--seed N]
 python -m sim.detect  --run DIR    [--detectors LIST]      # writes labels.json
 ```
+
+`validate_config.py` is the first (and currently only) implemented entry point. Everything under `sim.*` is still contract-only.
 
 Programmatic:
 
