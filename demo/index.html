@@ -13,6 +13,15 @@
     <p class="sub">load two <code>summary.json</code> files to compare runs side by side. either slot alone also renders.</p>
   </header>
 
+  <section id="comparison" class="comparison" hidden aria-label="A vs B comparison">
+    <header class="comparison-header">
+      <h2>A &rarr; B</h2>
+      <p id="takeaway" class="takeaway"></p>
+      <span id="topo-badge" class="topo-badge" hidden></span>
+    </header>
+    <ul id="diff-list" class="diff-list"></ul>
+  </section>
+
   <section class="slots">
     <article class="slot" data-slot="A">
       <header class="slot-header">
@@ -131,15 +140,6 @@
         </details>
       </div>
     </article>
-  </section>
-
-  <section id="comparison" class="comparison" hidden aria-label="A vs B comparison">
-    <header class="comparison-header">
-      <h2>A &rarr; B</h2>
-      <p id="takeaway" class="takeaway"></p>
-      <span id="topo-badge" class="topo-badge" hidden></span>
-    </header>
-    <ul id="diff-list" class="diff-list"></ul>
   </section>
 
   <section class="empty-both" id="empty-both">

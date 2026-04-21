@@ -479,7 +479,31 @@ function renderSummary(slotKey, summary, sourceLabel) {
   if (names.length === 0) {
     els.detectors.append(el("p", "empty-note", "(no detectors reported)"));
   } else {
-    for (const n of names) els.detectors.append(renderDetectorCard(n, detectors[n]));
+    // Fired detectors render inline; silent ones collapse into a
+    // disclosure so the slot's default height is driven by what
+    // actually fired, not by detector count. No information is
+    // removed — the silent names appear in the disclosure summary,
+    // and expanding shows the full per-detector card.
+    const firedNames = names.filter((n) => detectors[n].fired);
+    const silentNames = names.filter((n) => !detectors[n].fired);
+    for (const n of firedNames) {
+      els.detectors.append(renderDetectorCard(n, detectors[n]));
+    }
+    if (silentNames.length > 0) {
+      const details = el("details", "silent-group");
+      const caption = el("summary", "silent-group-summary");
+      const label = silentNames.length === 1 ? "silent detector" : "silent detectors";
+      caption.append(el("span", "silent-count mono", String(silentNames.length)));
+      caption.append(el("span", "silent-label", ` ${label} — `));
+      caption.append(el("span", "silent-names mono", silentNames.join(" · ")));
+      details.append(caption);
+      const inner = el("div", "silent-group-cards");
+      for (const n of silentNames) {
+        inner.append(renderDetectorCard(n, detectors[n]));
+      }
+      details.append(inner);
+      els.detectors.append(details);
+    }
   }
 
   els.stats.innerHTML = "";
