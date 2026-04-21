@@ -45,6 +45,8 @@ regime summary — configs/regime_locked.yaml
 
 Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and neither global-coherence detector fires, but the tail 2-way velocity separability jumps to ~700 — the bimodal fingerprint of the intermediate regime. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
 
+Add `--summary-json` to also write the same verdicts and stats to `summary.json` in the output directory — a machine-readable seam for programmatic / browser consumers. Both views are rendered from one shared builder so they cannot drift.
+
 ## Docs
 
 - [`DESIGN_V0.md`](./DESIGN_V0.md) — full v0 design note.

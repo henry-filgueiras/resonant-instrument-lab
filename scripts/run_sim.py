@@ -2,7 +2,8 @@
 """Run one simulator config and write artifacts to an output directory.
 
 Usage:
-    python scripts/run_sim.py --config PATH --out DIR [--seed N] [--summary]
+    python scripts/run_sim.py --config PATH --out DIR [--seed N]
+                              [--summary] [--summary-json]
 
 The config is validated (DESIGN_V0.md §9.2) before simulation; the run
 writes state.npz, events.jsonl, topology.json, audio.wav, and a frozen
@@ -10,10 +11,14 @@ config.yaml copy into the output directory (DESIGN_V0.md §9.6).
 
 With --summary, a compact semantic regime summary is printed after the
 run, driven by the detectors in sim/detectors.py and supporting stats
-from sim/derived.py. No raw arrays to stdout — just verdicts, margins,
-and a few physical numbers.
+from sim/derived.py. With --summary-json, the same verdicts and stats
+are also written to `summary.json` in the output directory as a
+machine-readable seam for future browser / notebook consumers. Both
+views are rendered from one shared summary dict so they cannot drift.
 """
 import argparse
+import json
+import math
 import sys
 from pathlib import Path
 
@@ -27,19 +32,38 @@ from sim.derived import cluster_assignments, kuramoto_order, mean_phase_velocity
 from sim.detectors import detect_drifting, detect_phase_locked  # noqa: E402
 from sim.garden import simulate  # noqa: E402
 
-
-def _fmt_sep(sep):
-    if sep == float("inf"):
-        return "inf"
-    return f"{sep:.2f}"
+SUMMARY_SCHEMA_VERSION = 1
 
 
-def _print_summary(cfg, config_path, out_dir):
-    """Print a compact human-readable regime summary for one run.
+def _json_float(x):
+    """Return `x` as a JSON-safe float, or `None` if non-finite / None."""
+    if x is None:
+        return None
+    xf = float(x)
+    if not math.isfinite(xf):
+        return None
+    return xf
 
-    Reads state.npz from `out_dir`, computes the current detectors and a
-    couple of supporting physical statistics, and emits a short block
-    on stdout. Not a labels.json writer — that schema lands later.
+
+def _detector_block(result, control_rate_hz):
+    return {
+        "fired": bool(result.fired),
+        "confidence": float(result.confidence),
+        "longest_window_s": float(result.longest_window_frames) / control_rate_hz,
+        "windows_s": [
+            [float(s) / control_rate_hz, float(e) / control_rate_hz]
+            for s, e in result.windows
+        ],
+    }
+
+
+def _build_summary(cfg, config_path, out_dir):
+    """Compute the regime summary dict consumed by both text and JSON renderers.
+
+    Reads `state.npz` from `out_dir`, invokes the current detectors, and
+    computes a small set of supporting physical stats. The returned dict
+    is the JSON schema — the text renderer consumes the same object so
+    the two views cannot drift.
     """
     rate = int(cfg["run"]["control_rate_hz"])
     duration_s = float(cfg["run"]["duration_s"])
@@ -57,33 +81,84 @@ def _print_summary(cfg, config_path, out_dir):
     tail_frames = min(rate, len(r))
     tail_r = float(r[-tail_frames:].mean())
 
-    tail_slice = min(int(3.0 * rate), phase_vel.shape[0])
-    v_tail = mean_phase_velocity(phase_vel, start_idx=-tail_slice)
-    sep = cluster_assignments(v_tail, n_clusters=2).separability_ratio if N >= 2 else None
+    stats = {
+        "mean_r": mean_r,
+        "tail_1s_mean_r": tail_r,
+    }
 
-    def _line(name, result):
-        if result.fired:
-            win_s = result.longest_window_frames / rate
+    if N >= 2:
+        tail_slice = min(int(3.0 * rate), phase_vel.shape[0])
+        v_tail = mean_phase_velocity(phase_vel, start_idx=-tail_slice)
+        sep = cluster_assignments(v_tail, n_clusters=2).separability_ratio
+        stats["tail_2way_velocity_separability"] = _json_float(sep)
+
+    meta_name = None
+    cfg_meta = cfg.get("meta")
+    if isinstance(cfg_meta, dict):
+        meta_name = cfg_meta.get("name")
+
+    return {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "meta": {
+            "config_path": str(config_path),
+            "config_name": meta_name,
+            "duration_s": duration_s,
+            "N": N,
+            "control_rate_hz": rate,
+        },
+        "detectors": {
+            "phase_locked": _detector_block(pl, rate),
+            "drifting": _detector_block(dr, rate),
+        },
+        "stats": stats,
+    }
+
+
+def _fmt_sep(sep):
+    if sep is None:
+        return "inf"
+    return f"{sep:.2f}"
+
+
+def _render_summary_text(summary):
+    """Build the human-readable terminal block from a summary dict."""
+    meta = summary["meta"]
+    det = summary["detectors"]
+    stats = summary["stats"]
+
+    def _line(name, d):
+        if d["fired"]:
             return (
-                f"  {name:<13}: FIRED   conf {result.confidence:.3f}   "
-                f"longest window {win_s:.2f} s"
+                f"  {name:<13}: FIRED   conf {d['confidence']:.3f}   "
+                f"longest window {d['longest_window_s']:.2f} s"
             )
         return f"  {name:<13}: silent"
 
     lines = [
         "",
-        f"regime summary — {config_path}",
-        f"  {duration_s:.2f} s, N={N}, control_rate={rate} Hz",
+        f"regime summary — {meta['config_path']}",
+        f"  {meta['duration_s']:.2f} s, N={meta['N']}, control_rate={meta['control_rate_hz']} Hz",
         "",
-        _line("phase_locked", pl),
-        _line("drifting", dr),
+        _line("phase_locked", det["phase_locked"]),
+        _line("drifting", det["drifting"]),
         "",
-        f"  mean r(t)                    {mean_r:.3f}",
-        f"  tail-1s r                    {tail_r:.3f}",
+        f"  mean r(t)                    {stats['mean_r']:.3f}",
+        f"  tail-1s r                    {stats['tail_1s_mean_r']:.3f}",
     ]
-    if sep is not None:
-        lines.append(f"  tail 2-way velocity sep.     {_fmt_sep(sep)}")
-    print("\n".join(lines))
+    if "tail_2way_velocity_separability" in stats:
+        lines.append(
+            f"  tail 2-way velocity sep.     "
+            f"{_fmt_sep(stats['tail_2way_velocity_separability'])}"
+        )
+    return "\n".join(lines)
+
+
+def _write_summary_json(summary, out_dir):
+    path = Path(out_dir) / "summary.json"
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, sort_keys=True, allow_nan=False)
+        f.write("\n")
+    return path
 
 
 def main():
@@ -94,6 +169,8 @@ def main():
                     help="override config.run.seed (useful for dataset generation)")
     ap.add_argument("--summary", action="store_true",
                     help="after the run, print a compact semantic regime summary to stdout")
+    ap.add_argument("--summary-json", action="store_true",
+                    help="after the run, write summary.json into the output directory")
     args = ap.parse_args()
 
     try:
@@ -114,8 +191,13 @@ def main():
     simulate(cfg, out, config_path=args.config)
     print(f"ok: wrote run artifacts to {out}")
 
-    if args.summary:
-        _print_summary(cfg, args.config, out)
+    if args.summary or args.summary_json:
+        summary = _build_summary(cfg, args.config, out)
+        if args.summary:
+            print(_render_summary_text(summary))
+        if args.summary_json:
+            path = _write_summary_json(summary, out)
+            print(f"ok: wrote {path}")
 
 
 if __name__ == "__main__":
