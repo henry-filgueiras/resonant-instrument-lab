@@ -57,6 +57,10 @@ function getSlotEls(slotEl) {
     topoCard: q("topology-card"),
     topoStage: q("topology-stage"),
     topoFooter: q("topology-footer"),
+    dynamicsCard: q("dynamics-card"),
+    rStage: q("r-stage"),
+    rasterStage: q("raster-stage"),
+    dynamicsFooter: q("dynamics-footer"),
     detectors: q("detectors"),
     stats: q("stats"),
     rawJson: q("raw-json"),
@@ -190,6 +194,189 @@ function renderTopology(slotKey) {
   }
 }
 
+// --- dynamics (r(t) sparkline + pulse raster) ---
+
+// Mark-up scaffolding: every firing window in `windows_s` becomes a
+// translucent accent band behind the sparkline / raster, so the reader
+// sees at a glance *when* the named regime held.
+function firingWindowBands(summary, durationS, viewW) {
+  if (!summary || !durationS || durationS <= 0) return [];
+  const dets = summary.detectors || {};
+  const bands = [];
+  for (const name of Object.keys(dets)) {
+    const d = dets[name];
+    if (!d || !d.fired || !Array.isArray(d.windows_s)) continue;
+    for (const w of d.windows_s) {
+      if (!Array.isArray(w) || w.length < 2) continue;
+      const [s, e] = w;
+      if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+      const x0 = Math.max(0, (s / durationS) * viewW);
+      const x1 = Math.min(viewW, (e / durationS) * viewW);
+      if (x1 > x0) bands.push({ x: x0, w: x1 - x0, name });
+    }
+  }
+  return bands;
+}
+
+function renderRSeries(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.rStage.innerHTML = "";
+  if (!summary) return;
+  const rs = summary.stats && summary.stats.r_series;
+  const values = rs && Array.isArray(rs.values) ? rs.values : null;
+  const fps = rs && typeof rs.fps === "number" && rs.fps > 0 ? rs.fps : null;
+  if (!values || values.length < 2 || !fps) {
+    els.rStage.append(el("p", "dynamics-missing", "r(t) unavailable"));
+    return;
+  }
+  const duration = (values.length - 1) / fps;
+  // Viewbox: 240×40 is the design aspect; stretched to the stage width.
+  const VB_W = 240, VB_H = 40, PAD_L = 2, PAD_R = 2, PAD_T = 3, PAD_B = 3;
+  const innerW = VB_W - PAD_L - PAD_R;
+  const innerH = VB_H - PAD_T - PAD_B;
+  const root = svg("svg", {
+    viewBox: `0 0 ${VB_W} ${VB_H}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+  root.setAttribute("aria-label", `r(t) over ${duration.toFixed(2)} s`);
+
+  // Firing-window bands — translucent vertical accents.
+  for (const b of firingWindowBands(summary, duration, innerW)) {
+    root.append(svg("rect", {
+      class: "dyn-band",
+      x: PAD_L + b.x,
+      y: PAD_T,
+      width: b.w,
+      height: innerH,
+    }));
+  }
+
+  // Reference line at r = 0.9 (the phase_locked threshold).
+  const yLock = PAD_T + innerH * (1 - 0.9);
+  root.append(svg("line", {
+    class: "dyn-ref",
+    x1: PAD_L, x2: PAD_L + innerW,
+    y1: yLock, y2: yLock,
+  }));
+
+  // Polyline through the (sampled) r(t).
+  const n = values.length;
+  const pts = values.map((v, i) => {
+    const x = PAD_L + (i / (n - 1)) * innerW;
+    const clamped = Math.max(0, Math.min(1, v));
+    const y = PAD_T + (1 - clamped) * innerH;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  root.append(svg("polyline", { class: "dyn-line", points: pts }));
+
+  els.rStage.append(root);
+}
+
+function renderPulseRaster(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.rasterStage.innerHTML = "";
+  if (!summary) return;
+  const raster = summary.stats && summary.stats.pulse_raster;
+  if (!Array.isArray(raster) || raster.length === 0) {
+    els.rasterStage.append(el("p", "dynamics-missing", "pulse raster unavailable"));
+    return;
+  }
+  const durationS = (summary.meta && summary.meta.duration_s) || null;
+  if (!durationS || durationS <= 0) {
+    els.rasterStage.append(el("p", "dynamics-missing", "pulse raster unavailable"));
+    return;
+  }
+
+  const N = raster.length;
+  const ROW_H = 4.5;   // SVG units per node row
+  const VB_W = 240;
+  const VB_H = N * ROW_H;
+  const PAD_L = 2, PAD_R = 2;
+  const innerW = VB_W - PAD_L - PAD_R;
+
+  const root = svg("svg", {
+    viewBox: `0 0 ${VB_W} ${VB_H}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+  root.setAttribute("aria-label", `pulse raster, ${N} nodes over ${durationS.toFixed(2)} s`);
+
+  // Firing-window bands, same as the r(t) sparkline.
+  for (const b of firingWindowBands(summary, durationS, innerW)) {
+    root.append(svg("rect", {
+      class: "dyn-band",
+      x: PAD_L + b.x,
+      y: 0,
+      width: b.w,
+      height: VB_H,
+    }));
+  }
+
+  // Per-node row separators (subtle) and pulse ticks.
+  for (let i = 0; i < N; i++) {
+    const yMid = (i + 0.5) * ROW_H;
+    // faint baseline so empty rows still read as rows
+    root.append(svg("line", {
+      class: "dyn-row-base",
+      x1: PAD_L, x2: PAD_L + innerW,
+      y1: yMid, y2: yMid,
+    }));
+    const pulses = raster[i];
+    if (!Array.isArray(pulses)) continue;
+    for (const t of pulses) {
+      if (!Number.isFinite(t)) continue;
+      if (t < 0 || t > durationS) continue;
+      const x = PAD_L + (t / durationS) * innerW;
+      root.append(svg("line", {
+        class: "dyn-tick",
+        x1: x, x2: x,
+        y1: yMid - ROW_H * 0.38,
+        y2: yMid + ROW_H * 0.38,
+      }));
+    }
+  }
+
+  els.rasterStage.append(root);
+}
+
+function renderDynamicsFooter(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.dynamicsFooter.innerHTML = "";
+  if (!summary) return;
+  const meta = summary.meta || {};
+  const raster = summary.stats && Array.isArray(summary.stats.pulse_raster)
+    ? summary.stats.pulse_raster : [];
+  const totalPulses = raster.reduce(
+    (acc, p) => acc + (Array.isArray(p) ? p.length : 0), 0
+  );
+  const parts = [
+    ["window", typeof meta.duration_s === "number" ? `${meta.duration_s.toFixed(2)} s` : "—"],
+    ["lock line", "r = 0.9"],
+    ["pulses", String(totalPulses)],
+  ];
+  for (const [k, v] of parts) {
+    const span = el("span", null);
+    span.append(el("span", "k", k), el("span", "v", v));
+    els.dynamicsFooter.append(span);
+  }
+}
+
+function renderDynamics(slotKey) {
+  renderRSeries(slotKey);
+  renderPulseRaster(slotKey);
+  renderDynamicsFooter(slotKey);
+}
+
 function topologiesMatch(a, b) {
   if (!a || !b || !Array.isArray(a.nodes) || !Array.isArray(b.nodes)) return null;
   if (a.nodes.length !== b.nodes.length) return false;
@@ -308,6 +495,7 @@ function renderSummary(slotKey, summary, sourceLabel) {
   els.summary.hidden = false;
 
   renderTopology(slotKey);
+  renderDynamics(slotKey);
 
   document.getElementById("empty-both").hidden = true;
   renderComparison();

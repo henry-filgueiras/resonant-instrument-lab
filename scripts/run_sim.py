@@ -28,7 +28,12 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 from sim.config import ConfigError, load  # noqa: E402
-from sim.derived import cluster_assignments, kuramoto_order, mean_phase_velocity  # noqa: E402
+from sim.derived import (  # noqa: E402
+    cluster_assignments,
+    kuramoto_order,
+    mean_phase_velocity,
+    pulse_times_of,
+)
 from sim.detectors import (  # noqa: E402
     detect_dominant_cluster,
     detect_drifting,
@@ -40,6 +45,12 @@ from sim.garden import simulate  # noqa: E402
 
 SUMMARY_SCHEMA_VERSION = 1
 
+# Target count for the downsampled `r(t)` series emitted under
+# `stats.r_series`. At control_rate=200 Hz the 6–12 s fixtures span
+# 1200–2400 frames, so a stride of 6–12 yields ~200 points — plenty
+# of resolution for a browser sparkline and tiny over the wire.
+R_SERIES_TARGET_POINTS = 200
+
 
 def _json_float(x):
     """Return `x` as a JSON-safe float, or `None` if non-finite / None."""
@@ -49,6 +60,44 @@ def _json_float(x):
     if not math.isfinite(xf):
         return None
     return xf
+
+
+def _build_r_series(r, control_rate_hz):
+    """Downsample `r(t)` to ~R_SERIES_TARGET_POINTS for browser sparklines.
+
+    Returns a `{"fps", "values"}` dict. `fps` is the effective
+    samples-per-second of the downsampled series so readers can
+    reconstruct timestamps via `i / fps`. Values are rounded to 4
+    decimal places to keep `summary.json` compact (`r ∈ [0, 1]`
+    at 4dp is 1e-4 precision — plenty for a sparkline).
+    """
+    r = np.asarray(r)
+    n = int(r.shape[0])
+    if n == 0:
+        return {"fps": float(control_rate_hz), "values": []}
+    stride = max(1, n // R_SERIES_TARGET_POINTS)
+    sampled = r[::stride]
+    return {
+        "fps": float(control_rate_hz) / stride,
+        "values": [round(float(x), 4) for x in sampled],
+    }
+
+
+def _build_pulse_raster(pulse_fired, control_rate_hz):
+    """Per-node pulse times in seconds, one list per node in index order.
+
+    Compact raster for browser rendering. Times are rounded to 4
+    decimal places (0.1 ms — below the `FLAM_MIN_OFFSET_S = 15 ms`
+    and `PHASE_BEATING_DW_MAX ≈ 200 ms` scales the detectors care
+    about). Returns a list of lists so node-index order is preserved
+    even with `sort_keys=True`.
+    """
+    pulses = pulse_times_of(np.asarray(pulse_fired))
+    rate = float(control_rate_hz)
+    return [
+        [round(float(f) / rate, 4) for f in node_pulses]
+        for node_pulses in pulses
+    ]
 
 
 def _detector_block(result, control_rate_hz):
@@ -94,6 +143,8 @@ def _build_summary(cfg, config_path, out_dir):
     stats = {
         "mean_r": mean_r,
         "tail_1s_mean_r": tail_r,
+        "r_series": _build_r_series(r, rate),
+        "pulse_raster": _build_pulse_raster(pulse_fired, rate),
     }
 
     if N >= 2:
