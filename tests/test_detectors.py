@@ -26,8 +26,14 @@ import numpy as np  # noqa: E402
 from sim import load, simulate  # noqa: E402
 from sim.detectors import (  # noqa: E402
     DRIFTING_MIN_S,
+    PHASE_BEATING_DW_MAX,
+    PHASE_BEATING_DW_MIN,
+    PHASE_BEATING_MIN_R2,
+    PHASE_BEATING_WARMUP_S,
     PHASE_LOCKED_MIN_S,
+    _phase_beating_pair_evidence,
     detect_drifting,
+    detect_phase_beating,
     detect_phase_locked,
 )
 
@@ -132,6 +138,93 @@ def test_detect_drifting_across_regimes():
     )
 
 
+# ---------------------------------------------------------------------------
+# phase_beating — fires only on the dedicated beating fixture.
+#
+# The three original regime fixtures are all negatives for this detector:
+#   - locked: every pair sits at |Δω̄| ≈ 0, below the lower velocity gate.
+#   - drifting: the smallest candidate pair has |Δω̄| ≈ 1.59 rad/s, above
+#     the 1.5 rad/s "close in mean phase velocity" upper gate — the
+#     drifting regime has genuinely structured pairwise drift, but the
+#     pairs are no longer near-frequency by this detector's definition.
+#   - two_cluster: intra-cluster pairs are locked (|Δω̄| ≈ 0), inter-
+#     cluster pairs sit at ~5.6 rad/s (above the upper gate).
+# `regime_phase_beating` is the single positive fixture. Its pair (0,1)
+# sits at |Δω̄| ≈ 1.22 rad/s with beat period ~5.1 s; the 12 s run covers
+# ~2 full cycles of the 2π coverage requirement.
+
+def test_detect_phase_beating_across_regimes():
+    # (a) fires on the dedicated positive fixture
+    cfg, art = _run(CONFIGS_DIR / "regime_phase_beating.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    result = detect_phase_beating(
+        art["theta"], art["phase_vel"], art["pulse_fired"], rate
+    )
+    assert result.fired, "phase_beating should fire on regime_phase_beating"
+    # Analysis window is the run minus the warmup skip.
+    expected_window_frames = art["theta"].shape[0] - int(PHASE_BEATING_WARMUP_S * rate)
+    assert result.longest_window_frames == expected_window_frames
+    assert result.windows == [(int(PHASE_BEATING_WARMUP_S * rate), art["theta"].shape[0])]
+    # R² margin above the 0.9 floor; the fixture's pair sits near R² ≈ 0.998.
+    assert result.confidence > 0.05, (
+        f"expected R² margin > 0.05 above floor {PHASE_BEATING_MIN_R2}, "
+        f"got confidence {result.confidence:.4f}"
+    )
+
+    # Confirm exactly the (0, 1) pair contributed — the distractor nodes
+    # sit too far away in frequency to enter the candidate band.
+    evidence = _phase_beating_pair_evidence(
+        art["theta"], art["phase_vel"], art["pulse_fired"], rate
+    )
+    assert len(evidence) == 1, f"expected one qualifying pair, got {len(evidence)}: {evidence}"
+    e = evidence[0]
+    assert (e["i"], e["j"]) == (0, 1)
+    assert PHASE_BEATING_DW_MIN <= abs(e["dw"]) <= PHASE_BEATING_DW_MAX
+    assert e["r2"] >= PHASE_BEATING_MIN_R2
+
+    # (b) silent on locked — every pair has Δω̄ ≈ 0, below lower gate
+    cfg_l, art_l = _run(CONFIGS_DIR / "regime_locked.yaml")
+    _assert_silent(
+        detect_phase_beating(
+            art_l["theta"], art_l["phase_vel"], art_l["pulse_fired"],
+            cfg_l["run"]["control_rate_hz"],
+        ),
+        "phase_beating", "regime_locked",
+    )
+
+    # (c) silent on drifting — smallest candidate |Δω̄| ≈ 1.59 rad/s is
+    # above the upper gate; the drifting regime has structured pairwise
+    # drift but its pairs are not "close in mean phase velocity" by this
+    # detector's threshold policy.
+    cfg_d, art_d = _run(CONFIGS_DIR / "regime_drifting.yaml")
+    _assert_silent(
+        detect_phase_beating(
+            art_d["theta"], art_d["phase_vel"], art_d["pulse_fired"],
+            cfg_d["run"]["control_rate_hz"],
+        ),
+        "phase_beating", "regime_drifting",
+    )
+
+    # (d) silent on two_cluster — intra-cluster pairs locked (|Δω̄| ≈ 0),
+    # inter-cluster pairs at ~5.6 rad/s (above upper gate).
+    cfg_t, art_t = _run(CONFIGS_DIR / "regime_two_cluster.yaml")
+    _assert_silent(
+        detect_phase_beating(
+            art_t["theta"], art_t["phase_vel"], art_t["pulse_fired"],
+            cfg_t["run"]["control_rate_hz"],
+        ),
+        "phase_beating", "regime_two_cluster",
+    )
+
+    print(
+        f"ok: phase_beating — phase_beating fixture fired "
+        f"(conf={result.confidence:.4f}, |Δω̄|={abs(e['dw']):.3f} rad/s, "
+        f"beat~{(2 * np.pi) / abs(e['dw']):.2f} s, R²={e['r2']:.4f}); "
+        f"locked, drifting, two_cluster silent"
+    )
+
+
 if __name__ == "__main__":
     test_detect_phase_locked_across_regimes()
     test_detect_drifting_across_regimes()
+    test_detect_phase_beating_across_regimes()
