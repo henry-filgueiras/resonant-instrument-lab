@@ -330,3 +330,68 @@ def sustained_windows(condition, min_duration_frames, hysteresis_frames=0):
         for s, e in zip(merged_starts, merged_ends)
         if e - s >= min_duration_frames
     ]
+
+
+def pulse_times_of(pulse_fired):
+    """Per-node ordered pulse frame indices extracted from `pulse_fired`.
+
+    Rhythm-side analogue of `kuramoto_order`: the minimum pure-function
+    projection of the `(T, N)` pulse mask into the form that
+    rhythm-facing detectors (`phase_beating`, `flam`, `polyrhythmic`)
+    all want — one ascending sequence of pulse frame indices per node.
+    No pairing, no interval stats, no thresholds; those belong to the
+    detector layer.
+
+    Parameters
+    ----------
+    pulse_fired : array-like, shape `(T, N)`
+        Per-frame pulse indicator as exported by the simulator. True at
+        `(t, i)` means node `i`'s phase-zero crossing fired on frame
+        `t` (see `DESIGN_V0.md §9.3`). Accepts any bool-castable dtype.
+
+    Returns
+    -------
+    tuple[np.ndarray, ...]
+        Length-N tuple. Entry `i` is a 1D `int64` array of frame indices
+        at which node `i` fired, in strictly ascending order. Nodes with
+        no pulses yield an empty `int64` array of shape `(0,)` — never
+        `None`, never omitted. `len(result) == N` always.
+
+    Raises
+    ------
+    ValueError
+        If `pulse_fired` is not 2D.
+
+    Edge cases
+    ----------
+    - `T == 0` → every entry is an empty `int64` array; length is still `N`.
+    - `N == 0` → empty tuple.
+    - All-False input → every entry is an empty `int64` array.
+    - All-True input → every entry is `np.arange(T, dtype=np.int64)`.
+
+    Units
+    -----
+    Frame indices, **not** sample indices and **not** seconds. Callers
+    that want seconds convert via `frames / control_rate_hz` themselves
+    — matching the unit policy of `sustained_windows` and keeping this
+    helper config-free. Pulse-to-audio-sample mapping uses `audio_rate_hz`
+    and is a rendering concern, not a detector concern.
+
+    Scope
+    -----
+    Lives in `sim/derived.py` because it is a pure projection of
+    exported state with no detector semantics — detectors will build
+    pair-wise offset series, inter-pulse intervals, and ratio checks on
+    top of this. Returning raw frame indices (rather than pre-computing
+    intervals or a 2D ragged array) keeps those downstream choices
+    open without commitment.
+    """
+    arr = np.asarray(pulse_fired)
+    if arr.ndim != 2:
+        raise ValueError(f"pulse_fired must be 2D (T, N), got shape {arr.shape}")
+    bool_arr = arr.astype(bool, copy=False)
+    _, N = bool_arr.shape
+    return tuple(
+        np.flatnonzero(bool_arr[:, i]).astype(np.int64, copy=False)
+        for i in range(N)
+    )
