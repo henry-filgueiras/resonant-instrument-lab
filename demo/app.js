@@ -1,7 +1,10 @@
 // Static regime-oracle viewer, A/B comparison mode. Loads up to two
 // summary.json files (file picker, paste box, or ?summaryA=URL / ?summaryB=URL
 // query params — fetch only works when served, not file://) and renders each
-// plus a detector-flip / stat-delta comparison card. No framework, no build.
+// plus a detector-flip / stat-delta comparison card. Each slot also renders a
+// small topology/body view from a sibling topology.json when available (fetched
+// next to the summary URL, or loaded via the per-slot "+ topology.json" picker
+// under file://). No framework, no build.
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -30,12 +33,14 @@ function kvRow(k, v) {
 
 // --- per-slot state ---
 const state = { A: null, B: null };
+const topos = { A: null, B: null };
 
 function getSlotEls(slotEl) {
   const q = (role) => slotEl.querySelector(`[data-role="${role}"]`);
   return {
     root: slotEl,
     file: q("file"),
+    topoFile: q("topo-file"),
     pasteToggle: q("paste-toggle"),
     pastePanel: q("paste-panel"),
     pasteArea: q("paste-area"),
@@ -49,6 +54,9 @@ function getSlotEls(slotEl) {
     metaRate: q("meta-rate"),
     metaSchema: q("meta-schema"),
     metaPath: q("meta-path"),
+    topoCard: q("topology-card"),
+    topoStage: q("topology-stage"),
+    topoFooter: q("topology-footer"),
     detectors: q("detectors"),
     stats: q("stats"),
     rawJson: q("raw-json"),
@@ -59,6 +67,173 @@ function setStatus(els, msg, kind) {
   els.status.textContent = msg || "";
   if (kind) els.status.dataset.kind = kind;
   else delete els.status.dataset.kind;
+}
+
+// --- topology ---
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => {
+  const n = document.createElementNS(SVG_NS, tag);
+  if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+
+function inferTopologyUrl(summaryUrl) {
+  if (typeof summaryUrl !== "string") return null;
+  // Strip query/fragment, then replace the trailing "summary.json" basename.
+  const [path] = summaryUrl.split(/[?#]/, 1);
+  const m = path.match(/^(.*\/)?summary\.json$/);
+  if (!m) return null;
+  return (m[1] ?? "") + "topology.json";
+}
+
+// Map omega (in the topology's min..max range) to a subtle accent ramp.
+// Green → teal → blue: lets two_cluster's frequency split read at a glance
+// without turning into a rainbow. Single-frequency worlds get flat accent.
+function nodeFill(t) {
+  // t in [0, 1]; clamp for safety.
+  const u = Math.max(0, Math.min(1, t));
+  // HSL 160 (green) → 210 (blue), consistent lightness.
+  const hue = 160 + u * 50;
+  return `hsl(${hue.toFixed(1)}, 55%, 58%)`;
+}
+
+function renderTopology(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const topo = topos[slotKey];
+
+  els.topoStage.innerHTML = "";
+  els.topoFooter.innerHTML = "";
+
+  if (!topo || !Array.isArray(topo.nodes) || topo.nodes.length === 0) {
+    els.topoCard.dataset.state = "missing";
+    els.topoStage.append(el("p", "topology-missing", "topology unavailable"));
+    return;
+  }
+  els.topoCard.dataset.state = "ok";
+
+  // Geometry: 100×100 viewBox with an inner padded area so dots near the
+  // edges don't clip and index labels have room.
+  const VB = 100, PAD = 8;
+  const inner = VB - 2 * PAD;
+  const sx = (x) => PAD + x * inner;
+  const sy = (y) => PAD + (1 - y) * inner; // flip: config y=0 is bottom
+
+  const root = svg("svg", { viewBox: `0 0 ${VB} ${VB}`, role: "img" });
+  root.setAttribute("aria-label", `topology: ${topo.nodes.length} nodes`);
+
+  // Frame + faint centerlines.
+  root.append(svg("rect", {
+    class: "topo-frame",
+    x: PAD, y: PAD, width: inner, height: inner, rx: 1,
+  }));
+  root.append(svg("line", {
+    class: "topo-grid",
+    x1: PAD + inner / 2, y1: PAD,
+    x2: PAD + inner / 2, y2: PAD + inner,
+  }));
+  root.append(svg("line", {
+    class: "topo-grid",
+    x1: PAD,          y1: PAD + inner / 2,
+    x2: PAD + inner,  y2: PAD + inner / 2,
+  }));
+
+  // Frequency range for subtle per-node tinting.
+  const omegas = topo.nodes
+    .map((n) => n.omega_0_hz)
+    .filter((v) => typeof v === "number" && Number.isFinite(v));
+  const wMin = omegas.length ? Math.min(...omegas) : 0;
+  const wMax = omegas.length ? Math.max(...omegas) : 1;
+  const wSpan = wMax - wMin > 1e-9 ? wMax - wMin : 1;
+
+  for (const node of topo.nodes) {
+    const p = node && node.pos;
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const cx = sx(+p[0]);
+    const cy = sy(+p[1]);
+    const t = typeof node.omega_0_hz === "number"
+      ? (node.omega_0_hz - wMin) / wSpan : 0.5;
+    root.append(svg("circle", {
+      class: "topo-node",
+      cx, cy, r: 2.6,
+      fill: nodeFill(t),
+    }));
+    const idx = Number.isInteger(node.index) ? node.index : "";
+    const lbl = svg("text", {
+      class: "topo-label",
+      x: cx,
+      y: cy - 4.2,
+    });
+    lbl.textContent = String(idx);
+    root.append(lbl);
+  }
+
+  els.topoStage.append(root);
+
+  // Footer: N • K0 • sigma • eta.
+  const fmt = (x, d = 2) =>
+    typeof x === "number" && Number.isFinite(x) ? x.toFixed(d) : "—";
+  const coup = topo.coupling || {};
+  const noise = topo.noise || {};
+  const parts = [
+    ["N", String(topo.N ?? topo.nodes.length)],
+    ["K₀", fmt(coup.K0, 2)],
+    ["σ", fmt(coup.sigma, 2)],
+    ["η", fmt(noise.eta, 2)],
+  ];
+  for (const [k, v] of parts) {
+    const span = el("span", null);
+    span.append(el("span", "k", k), el("span", "v", v));
+    els.topoFooter.append(span);
+  }
+}
+
+function topologiesMatch(a, b) {
+  if (!a || !b || !Array.isArray(a.nodes) || !Array.isArray(b.nodes)) return null;
+  if (a.nodes.length !== b.nodes.length) return false;
+  const EPS = 1e-3;
+  // Compare by index where possible; otherwise by order.
+  const byIdx = (arr) => {
+    const m = new Map();
+    for (const n of arr) if (Number.isInteger(n?.index)) m.set(n.index, n);
+    return m.size === arr.length ? m : null;
+  };
+  const ma = byIdx(a.nodes), mb = byIdx(b.nodes);
+  const pairs = ma && mb
+    ? [...ma.keys()].map((k) => [ma.get(k), mb.get(k)])
+    : a.nodes.map((n, i) => [n, b.nodes[i]]);
+  for (const [na, nb] of pairs) {
+    if (!na || !nb) return false;
+    const pa = na.pos, pb = nb.pos;
+    if (!Array.isArray(pa) || !Array.isArray(pb)) return false;
+    if (Math.abs(pa[0] - pb[0]) > EPS) return false;
+    if (Math.abs(pa[1] - pb[1]) > EPS) return false;
+  }
+  return true;
+}
+
+function renderTopoBadge() {
+  const badge = document.getElementById("topo-badge");
+  if (!badge) return;
+  const a = topos.A, b = topos.B;
+  if (!a || !b) { badge.hidden = true; return; }
+  const match = topologiesMatch(a, b);
+  if (match === null) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.dataset.same = match ? "true" : "false";
+  badge.textContent = match ? "same topology" : "different topology";
+}
+
+function setTopology(slotKey, topo) {
+  topos[slotKey] = topo && typeof topo === "object" ? topo : null;
+  // If the summary card isn't visible yet, renderSummary will call us later.
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (slotEl && !slotEl.querySelector('[data-role="summary"]').hidden) {
+    renderTopology(slotKey);
+  }
+  renderTopoBadge();
 }
 
 function renderDetectorCard(name, d) {
@@ -132,8 +307,11 @@ function renderSummary(slotKey, summary, sourceLabel) {
   els.empty.hidden = true;
   els.summary.hidden = false;
 
+  renderTopology(slotKey);
+
   document.getElementById("empty-both").hidden = true;
   renderComparison();
+  renderTopoBadge();
 }
 
 // --- comparison ---
@@ -293,6 +471,17 @@ function wireSlot(slotEl) {
       setStatus(els, `load failed: ${err.message}`, "err");
     }
   });
+  if (els.topoFile) {
+    els.topoFile.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        setTopology(slotKey, JSON.parse(await file.text()));
+      } catch (err) {
+        setStatus(els, `topology load failed: ${err.message}`, "err");
+      }
+    });
+  }
   els.pasteToggle.addEventListener("click", () => {
     els.pastePanel.hidden = !els.pastePanel.hidden;
     if (!els.pastePanel.hidden) els.pasteArea.focus();
@@ -309,14 +498,18 @@ function wireSlot(slotEl) {
 for (const slotEl of document.querySelectorAll(".slot")) wireSlot(slotEl);
 
 // query params: ?summaryA=... & ?summaryB=...  (legacy: ?summary=... → slot A)
-(async function loadFromQuery() {
+// ?topologyA=... / ?topologyB=... override; otherwise infer a sibling
+// "topology.json" next to the summary URL and fetch it best-effort. Slots
+// load in parallel so each slot's summary+topology pair doesn't block the
+// other (matters for snappy first paint and for headless capture).
+(function loadFromQuery() {
   const qp = new URLSearchParams(location.search);
   const pairs = [
-    ["A", qp.get("summaryA") || qp.get("summary")],
-    ["B", qp.get("summaryB")],
+    ["A", qp.get("summaryA") || qp.get("summary"), qp.get("topologyA")],
+    ["B", qp.get("summaryB"),                      qp.get("topologyB")],
   ];
-  for (const [key, url] of pairs) {
-    if (!url) continue;
+  Promise.all(pairs.map(async ([key, url, topoOverride]) => {
+    if (!url) return;
     const slotEl = document.querySelector(`.slot[data-slot="${key}"]`);
     const els = getSlotEls(slotEl);
     try {
@@ -325,6 +518,14 @@ for (const slotEl of document.querySelectorAll(".slot")) wireSlot(slotEl);
       renderSummary(key, await resp.json(), url);
     } catch (err) {
       setStatus(els, `fetch failed: ${err.message}`, "err");
+      return;
     }
-  }
+    const topoUrl = topoOverride || inferTopologyUrl(url);
+    if (!topoUrl) return;
+    try {
+      const tr = await fetch(topoUrl);
+      if (!tr.ok) return; // missing sibling is fine — fail graceful
+      setTopology(key, await tr.json());
+    } catch (_) { /* network / parse: leave topology unavailable */ }
+  }));
 })();
