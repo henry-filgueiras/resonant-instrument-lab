@@ -29,7 +29,12 @@ import yaml  # noqa: E402
 
 from sim.config import ConfigError, load  # noqa: E402
 from sim.derived import cluster_assignments, kuramoto_order, mean_phase_velocity  # noqa: E402
-from sim.detectors import detect_drifting, detect_phase_beating, detect_phase_locked  # noqa: E402
+from sim.detectors import (  # noqa: E402
+    detect_drifting,
+    detect_flam,
+    detect_phase_beating,
+    detect_phase_locked,
+)
 from sim.garden import simulate  # noqa: E402
 
 SUMMARY_SCHEMA_VERSION = 1
@@ -77,6 +82,7 @@ def _build_summary(cfg, config_path, out_dir):
     pl = detect_phase_locked(theta, rate)
     dr = detect_drifting(theta, rate)
     pb = detect_phase_beating(theta, phase_vel, pulse_fired, rate)
+    fl = detect_flam(phase_vel, pulse_fired, rate)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -112,6 +118,7 @@ def _build_summary(cfg, config_path, out_dir):
             "phase_locked": _detector_block(pl, rate),
             "drifting": _detector_block(dr, rate),
             "phase_beating": _detector_block(pb, rate),
+            "flam": _detector_block(fl, rate),
         },
         "stats": stats,
     }
@@ -145,6 +152,7 @@ def _render_summary_text(summary):
         _line("phase_locked", det["phase_locked"]),
         _line("drifting", det["drifting"]),
         _line("phase_beating", det["phase_beating"]),
+        _line("flam", det["flam"]),
         "",
         f"  mean r(t)                    {stats['mean_r']:.3f}",
         f"  tail-1s r                    {stats['tail_1s_mean_r']:.3f}",
