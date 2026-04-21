@@ -1,15 +1,19 @@
 """First semantic-detector layer.
 
 Thin, deterministic detectors built on top of `sim.derived` primitives.
-Two global-coherence detectors plus two pairwise rhythm detectors:
+Two global-coherence detectors, two pairwise rhythm detectors, and one
+cluster-structure detector:
 
-- `detect_phase_locked`  — sustained high global coherence.
-- `detect_drifting`      — sustained low global coherence.
-- `detect_phase_beating` — near-frequency node pairs whose unwrapped
+- `detect_phase_locked`     — sustained high global coherence.
+- `detect_drifting`         — sustained low global coherence.
+- `detect_phase_beating`    — near-frequency node pairs whose unwrapped
   phase difference drifts linearly across the analysis window.
-- `detect_flam`          — frequency-locked node pairs whose pulse
+- `detect_flam`             — frequency-locked node pairs whose pulse
   times land repeatedly with a small but nonzero offset and stand
   alone (no other node pulses between them).
+- `detect_dominant_cluster` — a velocity-gap partition that yields a
+  coherent, nontrivially-sized sub-group cleanly separated from the
+  rest of the ensemble.
 
 Threshold policy
 ----------------
@@ -42,7 +46,14 @@ from typing import NamedTuple
 
 import numpy as np
 
-from sim.derived import kuramoto_order, pulse_times_of, sustained_windows
+from sim.derived import (
+    cluster_assignments,
+    kuramoto_order,
+    local_kuramoto_order,
+    mean_phase_velocity,
+    pulse_times_of,
+    sustained_windows,
+)
 
 
 class DetectionResult(NamedTuple):
@@ -597,4 +608,205 @@ def detect_flam(phase_vel, pulse_fired, control_rate_hz):
         windows=[(ws, T)],
         confidence=mean_margin,
         longest_window_frames=T - ws,
+    )
+
+
+# --- dominant_cluster ------------------------------------------------------
+# Cluster-structure detector. Asks: over the tail analysis window, does
+# the per-node mean-phase-velocity signal partition cleanly into two
+# groups, each nontrivially sized, with at least one group internally
+# phase-coherent?
+#
+# Divergence from the original ontology sketch
+# --------------------------------------------
+# `ONTOLOGY.md` sketches the label with a size-dominance rule
+# (`|largest| >= size_frac · N`, `r_dom = 0.8`) and documents that
+# balanced 4/4 splits at `N = 8` never fire — i.e. the original sketch
+# cannot name the current `regime_two_cluster` fixture, which is
+# exactly a 4/4 split. We deliberately evolve the definition: the
+# detector fires when at least one coherent sub-group stands cleanly
+# apart from the rest, whether or not any single sub-group occupies a
+# majority of the ensemble. The name is kept ("a group is running its
+# own show") but the criterion is coherence + separation, not size
+# majority. The pivot is recorded in `DIRECTORS_NOTES.md`; if later
+# detectors (`unstable_bridge`, `brittle_lock`) need the strict
+# size-majority interpretation, that's a cluster-membership helper on
+# top of this detector, not a change to its firing rule.
+#
+# Window & partition
+# ------------------
+# Analysis is the tail `DOMINANT_CLUSTER_TAIL_S = 3.0` s — the same
+# tail window the summary builder already uses for the 2-way
+# velocity-separability stat. `cluster_assignments(v_tail,
+# n_clusters=2)` partitions the N nodes into two groups by the largest
+# adjacent gap in sorted mean velocity, and returns a separability
+# ratio = `selected_gap / max(unselected_gap)`. A large ratio means
+# the chosen inter-cluster boundary is much wider than any remaining
+# intra-cluster gap — what "clean two-way split" means here.
+#
+# Separability gate — DOMINANT_CLUSTER_MIN_SEP
+# --------------------------------------------
+# `sep >= 5.0`. Survey across the five fixtures on the 3 s tail:
+#   - `regime_two_cluster`: sep ≈ 706       (fires, by design)
+#   - `regime_flam`        (N=4): sep ≈ 1.90
+#   - `regime_phase_beating`:     sep ≈ 1.79
+#   - `regime_drifting`:          sep ≈ 1.42
+#   - `regime_locked`:            sep ≈ 0.00 (all velocities equal)
+# Five is well above every negative (next-highest is 1.9) and far below
+# the positive (706). The ratio is scale-free; 5 is not threshold-gamed.
+#
+# Cluster-size gate — DOMINANT_CLUSTER_MIN_SIZE
+# ---------------------------------------------
+# `min(|C_0|, |C_1|) >= 2`. Excludes the degenerate split where one
+# node sits far from seven others (e.g. a single outlier in
+# `regime_drifting`, where the sorted-velocity extrema produce a 1+7
+# split). "At least two nontrivial clusters exist" is the task's
+# explicit ask; a singleton cluster is not a group.
+#
+# N precondition — DOMINANT_CLUSTER_MIN_N
+# ---------------------------------------
+# Need at least 4 nodes before a "two nontrivial clusters" claim makes
+# sense (2+2 minimum). Below `N = 4` the detector stays silent.
+#
+# Coherence gate — DOMINANT_CLUSTER_MIN_LOCAL_R
+# ---------------------------------------------
+# At least one cluster must have `local_r >= 0.9` across the tail
+# window. This is the same 0.9 threshold `detect_phase_locked` uses on
+# global `r` — a sub-group is called coherent when it would lock by
+# the same standard the whole ensemble is.
+#
+# Confidence
+# ----------
+# Mean of `(local_r − DOMINANT_CLUSTER_MIN_LOCAL_R)` across qualifying
+# clusters — same "how far above the coherence floor" shape as
+# `detect_phase_locked`. Observed on `regime_two_cluster`: both
+# clusters at `local_r ≈ 0.993` → margin ≈ 0.093. Scale is
+# `[0, 1 − 0.9]` = `[0, 0.1]` in practice.
+DOMINANT_CLUSTER_TAIL_S = 3.0
+DOMINANT_CLUSTER_MIN_N = 4
+DOMINANT_CLUSTER_MIN_SIZE = 2
+DOMINANT_CLUSTER_MIN_SEP = 5.0
+DOMINANT_CLUSTER_MIN_LOCAL_R = 0.9
+
+
+def _dominant_cluster_evidence(theta, phase_vel, control_rate_hz):
+    """Per-cluster evidence list for `detect_dominant_cluster`.
+
+    Applies the whole-partition preconditions (`N >= MIN_N`, non-empty
+    tail window, `sep >= MIN_SEP`, every cluster size `>= MIN_SIZE`)
+    first; returns `[]` if any fails. Otherwise returns one dict per
+    cluster whose tail-window local `r` clears
+    `DOMINANT_CLUSTER_MIN_LOCAL_R`:
+
+        {"cluster_idx": int, "size": int, "local_r": float,
+         "mean_vel": float, "separability_ratio": float,
+         "members": np.ndarray[int]}
+
+    Shared by the detector itself and by tests that want to inspect
+    which clusters contributed without re-running the simulator.
+    Clusters are ordered ascending by mean-velocity centroid (the
+    `cluster_assignments` convention) — `cluster_idx = 0` is the
+    slower group.
+    """
+    theta = np.asarray(theta)
+    phase_vel = np.asarray(phase_vel)
+    if theta.ndim != 2 or phase_vel.shape != theta.shape:
+        raise ValueError(
+            "theta and phase_vel must share shape (T, N); "
+            f"got {theta.shape}, {phase_vel.shape}"
+        )
+    T, N = theta.shape
+    if N < DOMINANT_CLUSTER_MIN_N:
+        return []
+    tail_frames = min(int(DOMINANT_CLUSTER_TAIL_S * control_rate_hz), T)
+    if tail_frames < 1:
+        return []
+    v_tail = mean_phase_velocity(phase_vel, start_idx=-tail_frames)
+    ca = cluster_assignments(v_tail, n_clusters=2)
+    sep = ca.separability_ratio
+    # `sep` can be +inf for degenerate inputs; numpy's inf > 5 is True, so
+    # the comparison does the right thing. NaN cannot occur here — the
+    # primitive returns 0.0 in the all-equal edge case.
+    if not (sep >= DOMINANT_CLUSTER_MIN_SEP):
+        return []
+    for m in ca.members:
+        if m.size < DOMINANT_CLUSTER_MIN_SIZE:
+            return []
+    theta_tail = theta[-tail_frames:]
+    evidence = []
+    for idx, m in enumerate(ca.members):
+        r_local = float(local_kuramoto_order(theta_tail, m).mean())
+        if r_local < DOMINANT_CLUSTER_MIN_LOCAL_R:
+            continue
+        evidence.append({
+            "cluster_idx": idx,
+            "size": int(m.size),
+            "local_r": r_local,
+            "mean_vel": float(v_tail[m].mean()),
+            "separability_ratio": float(sep) if np.isfinite(sep) else float("inf"),
+            "members": np.asarray(m),
+        })
+    return evidence
+
+
+def detect_dominant_cluster(theta, phase_vel, control_rate_hz):
+    """Fire on a coherent, well-separated velocity sub-group in the tail window.
+
+    Defining condition
+    ------------------
+    Over the tail analysis window `[T − tail_frames, T)` with
+    `tail_frames = DOMINANT_CLUSTER_TAIL_S · control_rate_hz`:
+
+    - `N >= DOMINANT_CLUSTER_MIN_N = 4` (need enough nodes for two
+      nontrivial groups);
+    - `cluster_assignments(v_tail, n_clusters=2).separability_ratio >=
+      DOMINANT_CLUSTER_MIN_SEP = 5.0` (clean 2-way split);
+    - every cluster has size `>= DOMINANT_CLUSTER_MIN_SIZE = 2`;
+    - at least one cluster has tail-window `local_r >=
+      DOMINANT_CLUSTER_MIN_LOCAL_R = 0.9`.
+
+    Parameters
+    ----------
+    theta : np.ndarray, shape `(T, N)`
+        Phase trajectories from `state.npz`.
+    phase_vel : np.ndarray, shape `(T, N)`
+        Per-frame phase velocity (rad/s) from `state.npz`.
+    control_rate_hz : int
+        Frames per second of the input arrays.
+
+    Returns
+    -------
+    DetectionResult
+        `fired` is True iff at least one cluster cleared the coherence
+        floor. `windows` is a single tail-window entry
+        `[(T − tail_frames, T)]` — the detector does not carve
+        per-cluster sub-windows; the evidence is a property of the
+        whole tail. `confidence` is the mean of `(local_r −
+        DOMINANT_CLUSTER_MIN_LOCAL_R)` across qualifying clusters.
+        `longest_window_frames` is the tail-window length.
+
+    Notes
+    -----
+    For tests and debugging that need to inspect *which* clusters
+    contributed, call `_dominant_cluster_evidence` directly. The
+    detector-level return deliberately collapses that list into the
+    standard `DetectionResult` shape; per-cluster membership does not
+    leak into the public result here (the counterfactual detectors
+    that need a cluster handle — `unstable_bridge` — will call the
+    evidence helper directly).
+    """
+    T = int(np.asarray(theta).shape[0])
+    tail_frames = min(int(DOMINANT_CLUSTER_TAIL_S * control_rate_hz), T)
+    evidence = _dominant_cluster_evidence(theta, phase_vel, control_rate_hz)
+    if not evidence:
+        return DetectionResult(fired=False, windows=[], confidence=0.0, longest_window_frames=0)
+    mean_margin = float(
+        np.mean([e["local_r"] - DOMINANT_CLUSTER_MIN_LOCAL_R for e in evidence])
+    )
+    ws = T - tail_frames
+    return DetectionResult(
+        fired=True,
+        windows=[(ws, T)],
+        confidence=mean_margin,
+        longest_window_frames=tail_frames,
     )

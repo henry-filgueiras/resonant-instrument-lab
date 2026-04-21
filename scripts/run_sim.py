@@ -30,6 +30,7 @@ import yaml  # noqa: E402
 from sim.config import ConfigError, load  # noqa: E402
 from sim.derived import cluster_assignments, kuramoto_order, mean_phase_velocity  # noqa: E402
 from sim.detectors import (  # noqa: E402
+    detect_dominant_cluster,
     detect_drifting,
     detect_flam,
     detect_phase_beating,
@@ -83,6 +84,7 @@ def _build_summary(cfg, config_path, out_dir):
     dr = detect_drifting(theta, rate)
     pb = detect_phase_beating(theta, phase_vel, pulse_fired, rate)
     fl = detect_flam(phase_vel, pulse_fired, rate)
+    dc = detect_dominant_cluster(theta, phase_vel, rate)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -119,6 +121,7 @@ def _build_summary(cfg, config_path, out_dir):
             "drifting": _detector_block(dr, rate),
             "phase_beating": _detector_block(pb, rate),
             "flam": _detector_block(fl, rate),
+            "dominant_cluster": _detector_block(dc, rate),
         },
         "stats": stats,
     }
@@ -139,10 +142,10 @@ def _render_summary_text(summary):
     def _line(name, d):
         if d["fired"]:
             return (
-                f"  {name:<13}: FIRED   conf {d['confidence']:.3f}   "
+                f"  {name:<16}: FIRED   conf {d['confidence']:.3f}   "
                 f"longest window {d['longest_window_s']:.2f} s"
             )
-        return f"  {name:<13}: silent"
+        return f"  {name:<16}: silent"
 
     lines = [
         "",
@@ -153,6 +156,7 @@ def _render_summary_text(summary):
         _line("drifting", det["drifting"]),
         _line("phase_beating", det["phase_beating"]),
         _line("flam", det["flam"]),
+        _line("dominant_cluster", det["dominant_cluster"]),
         "",
         f"  mean r(t)                    {stats['mean_r']:.3f}",
         f"  tail-1s r                    {stats['tail_1s_mean_r']:.3f}",

@@ -25,6 +25,10 @@ import numpy as np  # noqa: E402
 
 from sim import load, simulate  # noqa: E402
 from sim.detectors import (  # noqa: E402
+    DOMINANT_CLUSTER_MIN_LOCAL_R,
+    DOMINANT_CLUSTER_MIN_SEP,
+    DOMINANT_CLUSTER_MIN_SIZE,
+    DOMINANT_CLUSTER_TAIL_S,
     DRIFTING_MIN_S,
     FLAM_DW_MAX,
     FLAM_MAX_OFFSET_S,
@@ -36,8 +40,10 @@ from sim.detectors import (  # noqa: E402
     PHASE_BEATING_MIN_R2,
     PHASE_BEATING_WARMUP_S,
     PHASE_LOCKED_MIN_S,
+    _dominant_cluster_evidence,
     _flam_pair_evidence,
     _phase_beating_pair_evidence,
+    detect_dominant_cluster,
     detect_drifting,
     detect_flam,
     detect_phase_beating,
@@ -319,8 +325,105 @@ def test_detect_flam_across_regimes():
     )
 
 
+# ---------------------------------------------------------------------------
+# dominant_cluster — fires only on the two_cluster fixture.
+#
+# The other four fixtures are all negatives under the detector's gates:
+#   - regime_locked: all mean velocities collapse onto one value →
+#     separability_ratio = 0 (no gap), below the 5.0 gate. Even though
+#     local_r = 1.0 for any subset, there is no genuine two-way split.
+#   - regime_drifting: sorted velocities form a ramp with no dominant
+#     gap → separability ≈ 1.4, below the 5.0 gate; local r in both
+#     candidate groups sits around 0.4–0.6, well below the 0.9 floor.
+#   - regime_phase_beating: separability ≈ 1.8 (below gate); no group
+#     reaches the 0.9 coherence floor (candidates sit at 0.33–0.58).
+#   - regime_flam: at N=4 the pair is internally coherent (local_r ≈
+#     0.98) but separability ≈ 1.9, below the gate — the coherent pair
+#     does not stand cleanly apart from the two distractors.
+# regime_two_cluster is the single positive: separability ≈ 706, clean
+# 4+4 split, both sub-clusters locked at local_r ≈ 0.993.
+
+def test_detect_dominant_cluster_across_regimes():
+    # (a) fires cleanly on two_cluster
+    cfg, art = _run(CONFIGS_DIR / "regime_two_cluster.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    result = detect_dominant_cluster(art["theta"], art["phase_vel"], rate)
+    assert result.fired, "dominant_cluster should fire on regime_two_cluster"
+    tail_frames = int(DOMINANT_CLUSTER_TAIL_S * rate)
+    assert result.longest_window_frames == tail_frames
+    T = art["theta"].shape[0]
+    assert result.windows == [(T - tail_frames, T)]
+    # Both sub-clusters at local_r ≈ 0.993 → margin ≈ 0.09 above 0.9 floor.
+    assert result.confidence > 0.05, (
+        f"expected solid margin above local_r floor {DOMINANT_CLUSTER_MIN_LOCAL_R}, "
+        f"got confidence {result.confidence:.4f}"
+    )
+
+    # Both clusters contribute, both above the coherence floor, sizes 4+4,
+    # separability far above the gate.
+    evidence = _dominant_cluster_evidence(art["theta"], art["phase_vel"], rate)
+    assert len(evidence) == 2, f"expected both clusters to qualify, got {len(evidence)}: {evidence}"
+    for e in evidence:
+        assert e["size"] >= DOMINANT_CLUSTER_MIN_SIZE
+        assert e["local_r"] >= DOMINANT_CLUSTER_MIN_LOCAL_R
+        assert e["separability_ratio"] >= DOMINANT_CLUSTER_MIN_SEP
+    # Clean 4+4 split expected for this fixture.
+    sizes = sorted(e["size"] for e in evidence)
+    assert sizes == [4, 4], f"expected balanced 4+4 split, got {sizes}"
+
+    # (b) silent on locked — separability = 0 (all velocities equal)
+    cfg_l, art_l = _run(CONFIGS_DIR / "regime_locked.yaml")
+    _assert_silent(
+        detect_dominant_cluster(
+            art_l["theta"], art_l["phase_vel"], cfg_l["run"]["control_rate_hz"]
+        ),
+        "dominant_cluster", "regime_locked",
+    )
+
+    # (c) silent on drifting — separability ≈ 1.4 (below gate), no
+    # candidate sub-cluster is internally coherent
+    cfg_d, art_d = _run(CONFIGS_DIR / "regime_drifting.yaml")
+    _assert_silent(
+        detect_dominant_cluster(
+            art_d["theta"], art_d["phase_vel"], cfg_d["run"]["control_rate_hz"]
+        ),
+        "dominant_cluster", "regime_drifting",
+    )
+
+    # (d) silent on phase_beating — separability ≈ 1.8 (below gate); no
+    # sub-cluster reaches the 0.9 coherence floor
+    cfg_b, art_b = _run(CONFIGS_DIR / "regime_phase_beating.yaml")
+    _assert_silent(
+        detect_dominant_cluster(
+            art_b["theta"], art_b["phase_vel"], cfg_b["run"]["control_rate_hz"]
+        ),
+        "dominant_cluster", "regime_phase_beating",
+    )
+
+    # (e) silent on flam — the coherent pair exists but separability ≈
+    # 1.9 (below the 5.0 gate); the pair does not stand cleanly apart
+    # from the distractors in the 3 s tail
+    cfg_f, art_f = _run(CONFIGS_DIR / "regime_flam.yaml")
+    _assert_silent(
+        detect_dominant_cluster(
+            art_f["theta"], art_f["phase_vel"], cfg_f["run"]["control_rate_hz"]
+        ),
+        "dominant_cluster", "regime_flam",
+    )
+
+    sep = evidence[0]["separability_ratio"]
+    locals_r = sorted(e["local_r"] for e in evidence)
+    print(
+        f"ok: dominant_cluster — two_cluster fired "
+        f"(conf={result.confidence:.4f}, sizes={sorted(e['size'] for e in evidence)}, "
+        f"local_r={[f'{x:.3f}' for x in locals_r]}, sep={sep:.1f}); "
+        f"locked, drifting, phase_beating, flam silent"
+    )
+
+
 if __name__ == "__main__":
     test_detect_phase_locked_across_regimes()
     test_detect_drifting_across_regimes()
     test_detect_phase_beating_across_regimes()
     test_detect_flam_across_regimes()
+    test_detect_dominant_cluster_across_regimes()

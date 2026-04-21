@@ -26,7 +26,9 @@ Detectors are the hardest part of the project and must pass a human sniff test b
 
 ## Try it
 
-Four regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
+One-liner launcher: `./run.sh` creates a `.venv` if needed, regenerates demo artifacts for every fixture under `runs/demo/`, prints copy-pasteable browser URLs (including a `locked` vs `two_cluster` comparison that shows the `dominant_cluster` detector flip), and starts a static server on `http://localhost:8000`. `PORT=9000 ./run.sh` overrides the port; Ctrl-C stops the server.
+
+Five regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
 
 ```
 $ python scripts/run_sim.py --config configs/regime_locked.yaml --out runs/demo/locked --summary
@@ -35,16 +37,18 @@ ok: wrote run artifacts to runs/demo/locked
 regime summary — configs/regime_locked.yaml
   6.00 s, N=8, control_rate=200 Hz
 
-  phase_locked : FIRED   conf 0.094   longest window 5.73 s
-  drifting     : silent
-  phase_beating: silent
+  phase_locked    : FIRED   conf 0.094   longest window 5.73 s
+  drifting        : silent
+  phase_beating   : silent
+  flam            : silent
+  dominant_cluster: silent
 
   mean r(t)                    0.981
   tail-1s r                    0.995
   tail 2-way velocity sep.     0.00
 ```
 
-Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and no global-coherence detector fires, but the tail 2-way velocity separability jumps to ~700 — the bimodal fingerprint of that intermediate regime; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
+Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and `dominant_cluster` fires on the clean 4+4 velocity split with both sub-groups internally locked, while the tail 2-way velocity separability jumps to ~700; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field; swap for `configs/regime_flam.yaml` and `flam` fires on the frequency-locked near-unison pair. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
 
 Add `--summary-json` to also write the same verdicts and stats to `summary.json` in the output directory — a machine-readable seam for programmatic / browser consumers. Both views are rendered from one shared builder so they cannot drift.
 

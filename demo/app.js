@@ -318,9 +318,11 @@ function renderSummary(slotKey, summary, sourceLabel) {
 
 // Human-readable sentence for a single detector state flip.
 const FLIP_SENTENCE = {
-  phase_locked:  { up: "Global lock emerged.",     down: "Lock collapsed." },
-  drifting:      { up: "Drift appeared.",          down: "Drift disappeared." },
-  phase_beating: { up: "Phase beating appeared.",  down: "Phase beating faded." },
+  phase_locked:     { up: "Global lock emerged.",      down: "Lock collapsed." },
+  drifting:         { up: "Drift appeared.",           down: "Drift disappeared." },
+  phase_beating:    { up: "Phase beating appeared.",   down: "Phase beating faded." },
+  flam:             { up: "A flam formed.",            down: "The flam dissolved." },
+  dominant_cluster: { up: "A dominant cluster formed.", down: "The cluster dissolved." },
 };
 
 function takeawayForFlip({ name, to }) {
