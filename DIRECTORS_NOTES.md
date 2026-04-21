@@ -280,3 +280,49 @@ First rhythm-facing entry in `sim.derived`. `pulse_times_of(pulse_fired) -> tupl
 - **No changes to `summary.json` / browser demo / `DESIGN_V0.md` / `ONTOLOGY.md`.** `scripts/run_sim.py::_build_summary` is not wired through the new detector in this pass; the detector is runnable from `sim.detectors` but does not yet appear in the regime-oracle CLI or JSON output. Deliberate — the brief was "one detector, not a rhythm subsystem", and extending the summary pipeline touches the terminal renderer, the JSON schema, and the browser demo's auto-render path all at once. Cleanest to land the detector + tests + fixture first and wire the UI in a dedicated follow-up pass.
 - **Not done in this pass.** No `flam`, no `groove`, no `polyrhythmic`. No rhythm-detector framework or base class — three detectors share a `DetectionResult` NamedTuple and that's the current "framework". No spectral analysis (FFT, periodogram); the linear-fit R² criterion is deliberately simpler and pulse-domain honest. No per-pair sub-windowing (e.g. "these pairs beat during frames [500, 1200) but not before"); the detector's window is the whole analysis region. No threshold YAML. No summary-pipeline wiring. No audio rendering.
 - **Next narrow step.** Wire `phase_beating` through `scripts/run_sim.py::_build_summary` so the terminal oracle and `summary.json` (and by extension the browser demo, which auto-renders any detector it finds in the JSON) start reporting it on runs. That's one additive change to `_build_summary` plus the new fixture's entry into `runs/demo/` — no new detector code, no new tests. After that: the next honest detector is either `flam` (pair-within-window, reuses `pulse_times_of` at a different parameter setting) or `dominant_cluster` (mean-velocity-band coverage, reuses `cluster_assignments`). `flam` is the natural rhythm-side sibling to `phase_beating`; `dominant_cluster` exercises a different derived primitive. Default leaning: `flam`, to keep pushing the rhythm-detector story forward one narrow true detector at a time.
+
+### 2026-04-21 — Claude Opus 4.7 (doc pass 17 — phase_beating wired through the oracle surfaces)
+Additive visibility pass. `detect_phase_beating` — landed but UI-invisible in doc pass 16 — now flows through the existing single-source-of-truth summary builder, so the terminal `--summary` block, the `--summary-json` file, and (by data-driven fall-through) the browser demo all report it. No new detector code, no schema redesign, no new tests. The detector matrix on disk is now 3/13 visible to a human reader, up from 2/13.
+
+- **Single additive edit in `_build_summary`.** Added the `pulse_fired` array to the `state.npz` load, one `detect_phase_beating(theta, phase_vel, pulse_fired, rate)` call, and a `"phase_beating"` key in the `detectors` dict using the same `_detector_block` helper the other two detectors already use. Terminal renderer gained one `_line("phase_beating", ...)` entry below the existing two. Total churn: 4 lines in `scripts/run_sim.py`. The `_detector_block` helper already consumes the generic `DetectionResult` shape, so it handles `phase_beating`'s different-looking analysis window (one `[warmup, T)` entry vs per-condition sustained windows) without special casing — the schema treats all detectors uniformly, which is exactly what makes this pass cheap.
+- **Browser demo picked up the new detector with zero code changes, as predicted in doc pass 14.** `demo/app.js` iterates `Object.keys(summary.detectors).sort()` and renders one card per entry using the shared `{fired, confidence, longest_window_s, windows_s}` block shape. The new `phase_beating` block has byte-identical shape to the existing two — adding it to `summary.json` was sufficient for the UI to render it. Cards now show alphabetically: `drifting`, `phase_beating`, `phase_locked`. The data-driven render decision from doc pass 14 pays off exactly as designed.
+- **Detector matrix across all four fixtures, measured after the wiring.**
+
+  | fixture                 | `phase_locked` | `drifting`    | `phase_beating` |
+  |-------------------------|----------------|---------------|-----------------|
+  | `regime_locked`         | FIRED (0.094)  | silent        | silent          |
+  | `regime_drifting`       | silent         | FIRED (0.184) | silent          |
+  | `regime_two_cluster`    | silent         | silent        | silent          |
+  | `regime_phase_beating`  | silent         | FIRED (0.184) | FIRED (0.098)   |
+
+- **Surprise (reported, not silently fixed): `drifting` also fires on `regime_phase_beating`.** The beating fixture is *globally incoherent by construction* — 6 distractor nodes at well-separated frequencies 4.0–7.0 Hz ensure low global `r(t)` the same way `regime_drifting` does. Physically this is correct: the fixture is simultaneously a drifting regime AND a beating-pair regime. The detectors are orthogonal judgments, not mutually exclusive regime labels — the multi-label ontology already anticipates this (ONTOLOGY: "multi-label, detector-grounded"). Kept as-is. The alternative would be tightening one of the two detectors to carve a moat, but the physics is the physics; naming the overlap is the honest thing to do and is exactly the kind of signal the regime oracle is supposed to surface.
+- **No test changes.** `tests/test_detectors.py` already asserts the fire matrix across all four fixture × three detector combinations that it cares about; none of the asserted cells moved. The new `drifting`-on-`phase_beating` observation is not in the assertion set (no test asserts `drifting` silent on `phase_beating`, because the fixture wasn't part of `drifting`'s matrix) — it's a new observation from the oracle output, not a regression. All three test files (`test_regimes.py`, `test_derived.py`, `test_detectors.py`) pass byte-for-byte with the same numbers as doc pass 16.
+- **Example terminal summary output for `regime_phase_beating`.**
+
+  ```
+  regime summary — configs/regime_phase_beating.yaml
+    12.00 s, N=8, control_rate=200 Hz
+
+    phase_locked : silent
+    drifting     : FIRED   conf 0.184   longest window 11.90 s
+    phase_beating: FIRED   conf 0.098   longest window 11.01 s
+
+    mean r(t)                    0.318
+    tail-1s r                    0.297
+    tail 2-way velocity sep.     1.79
+  ```
+
+- **Example `summary.json` detector block** (from `runs/demo/phase_beating/summary.json`, alphabetical sort as before):
+
+  ```json
+  "detectors": {
+    "drifting":      { "fired": true,  "confidence": 0.184, "longest_window_s": 11.905, "windows_s": [[0.015, 11.92]] },
+    "phase_beating": { "fired": true,  "confidence": 0.098, "longest_window_s": 11.005, "windows_s": [[1.0, 12.005]] },
+    "phase_locked":  { "fired": false, "confidence": 0.0,   "longest_window_s": 0.0,    "windows_s": [] }
+  }
+  ```
+
+- **README touch: fixture count updated and one line describing the beating fixture added.** The existing "Try it" code block gained the third detector line in its example output so a reader sees `phase_beating` in the terminal oracle even before they run anything. Kept the tone conservative — no "here's a fourth regime to try" bullet shuffle; just updated the counts and appended one clause to the swap paragraph. Structural README changes were explicitly out of scope.
+- **Column alignment.** `phase_locked` is 12 chars, `drifting` is 8, `phase_beating` is exactly 13 — the existing `f"{name:<13}"` pad width handles all three without modification. `phase_beating` sits flush with the colon and the other two get their trailing spaces, so the colons still align in the output. No width bump needed; a future 14+ character detector name will force the question.
+- **Not done in this pass.** No new detector code (phase_beating was already implemented). No schema version bump (the detector block shape is unchanged; we added an entry, not a field). No new tests (the fire matrix assertions still cover what matters). No `ONTOLOGY.md` or `DESIGN_V0.md` touches — they already document phase_beating. No browser demo code changes. No new fixture. No `runs/demo/phase_beating/` commit — the `runs/` directory is gitignored and exists only for local reproducibility.
+- **Next narrow step.** With 3/13 detectors now visible through every oracle surface (terminal + JSON + browser), the remaining detectors fall into three buckets: rhythm-side (`flam`, `polyrhythmic`, `groove`, `groove_collapse`, `beat_bloom`) that will reuse `pulse_times_of`; cluster-side (`dominant_cluster`) that will reuse `cluster_assignments`; and counterfactual-side (`unstable_bridge`, `brittle_lock`, `tension_break`, `regime_change`) that need `sim.ablate` to exist. The honest next step is `flam` — pair-within-window pulse-time detector, reuses the same `pulse_times_of` machinery that `phase_beating` already uses, needs no new derived primitive. After that, either `dominant_cluster` (cheap, exercises `cluster_assignments`) or `sim.ablate` scaffolding (expensive, unlocks four detectors at once). Default leaning: `flam` next, then `dominant_cluster`, then the `sim.ablate` landing.
