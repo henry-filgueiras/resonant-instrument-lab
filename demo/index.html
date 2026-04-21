@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>resonant instrument lab — regime oracle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header class="page-header">
+    <h1>regime oracle</h1>
+    <p class="sub">static browser view of a simulator run's <code>summary.json</code>.</p>
+  </header>
+
+  <section class="loader" aria-label="load summary">
+    <label class="file-picker">
+      <input type="file" accept="application/json,.json" id="file-input">
+      <span>load summary.json</span>
+    </label>
+    <span class="sep">or</span>
+    <button id="paste-toggle" type="button">paste JSON</button>
+    <span id="status" class="status" role="status"></span>
+  </section>
+
+  <section id="paste-panel" class="paste-panel" hidden>
+    <textarea id="paste-area" rows="6" spellcheck="false"
+      placeholder='{ "schema_version": 1, "meta": {...}, "detectors": {...}, "stats": {...} }'></textarea>
+    <div class="paste-actions">
+      <button id="paste-apply" type="button">render</button>
+    </div>
+  </section>
+
+  <section id="empty" class="empty">
+    <p>no summary loaded.</p>
+    <p class="hint">pick a <code>summary.json</code> above, or serve the repo with
+      <code>python -m http.server</code> and open
+      <code>demo/index.html?summary=../runs/demo/locked/summary.json</code>.</p>
+  </section>
+
+  <article id="summary" class="summary" hidden>
+    <header class="meta-card">
+      <h2 id="meta-name"></h2>
+      <div class="meta-grid">
+        <div><span class="k">duration</span><span id="meta-duration" class="v mono"></span></div>
+        <div><span class="k">N</span><span id="meta-n" class="v mono"></span></div>
+        <div><span class="k">control rate</span><span id="meta-rate" class="v mono"></span></div>
+        <div><span class="k">schema</span><span id="meta-schema" class="v mono"></span></div>
+      </div>
+      <div class="meta-path mono" id="meta-path"></div>
+    </header>
+
+    <section id="detectors" class="detectors" aria-label="detectors"></section>
+
+    <section id="stats" class="stats" aria-label="stats"></section>
+
+    <details class="raw">
+      <summary>raw summary.json</summary>
+      <pre id="raw-json" class="mono"></pre>
+    </details>
+  </article>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

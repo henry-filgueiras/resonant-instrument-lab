@@ -47,6 +47,8 @@ Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead;
 
 Add `--summary-json` to also write the same verdicts and stats to `summary.json` in the output directory — a machine-readable seam for programmatic / browser consumers. Both views are rendered from one shared builder so they cannot drift.
 
+For a browser-friendly rendering of any `summary.json`, open `demo/index.html` and either pick the file from the "load summary.json" button, or serve the repo with `python -m http.server` and navigate to `http://localhost:8000/demo/index.html?summary=../runs/demo/locked/summary.json`. Vanilla HTML/CSS/JS, no build step.
+
 ## Docs
 
 - [`DESIGN_V0.md`](./DESIGN_V0.md) — full v0 design note.
