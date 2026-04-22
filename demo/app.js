@@ -534,6 +534,7 @@ const FLIP_SENTENCE = {
   drifting:         { up: "Drift appeared.",           down: "Drift disappeared." },
   phase_beating:    { up: "Phase beating appeared.",   down: "Phase beating faded." },
   flam:             { up: "A flam formed.",            down: "The flam dissolved." },
+  polyrhythmic:     { up: "A polyrhythm locked in.",   down: "The polyrhythm dissolved." },
   dominant_cluster: { up: "A dominant cluster formed.", down: "The cluster dissolved." },
 };
 

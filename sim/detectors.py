@@ -1,8 +1,8 @@
 """First semantic-detector layer.
 
 Thin, deterministic detectors built on top of `sim.derived` primitives.
-Two global-coherence detectors, two pairwise rhythm detectors, and one
-cluster-structure detector:
+Two global-coherence detectors, three pairwise rhythm detectors, and
+one cluster-structure detector:
 
 - `detect_phase_locked`     — sustained high global coherence.
 - `detect_drifting`         — sustained low global coherence.
@@ -11,6 +11,9 @@ cluster-structure detector:
 - `detect_flam`             — frequency-locked node pairs whose pulse
   times land repeatedly with a small but nonzero offset and stand
   alone (no other node pulses between them).
+- `detect_polyrhythmic`     — node pairs whose observed pulse rates sit
+  in a small-integer ratio (2:3 or 3:4) within tolerance, sustained
+  across sub-windows of the run.
 - `detect_dominant_cluster` — a velocity-gap partition that yields a
   coherent, nontrivially-sized sub-group cleanly separated from the
   rest of the ensemble.
@@ -603,6 +606,323 @@ def detect_flam(phase_vel, pulse_fired, control_rate_hz):
         return DetectionResult(fired=False, windows=[], confidence=0.0, longest_window_frames=0)
     margins = [(e["n_events"] - FLAM_MIN_EVENTS) / FLAM_MIN_EVENTS for e in evidence]
     mean_margin = float(np.mean(margins))
+    return DetectionResult(
+        fired=True,
+        windows=[(ws, T)],
+        confidence=mean_margin,
+        longest_window_frames=T - ws,
+    )
+
+
+# --- polyrhythmic ----------------------------------------------------------
+# Pairwise pulse-rate detector. Asks: are there node pairs whose observed
+# pulse rates sit in a small-integer ratio (2:3 or 3:4) over a sustained
+# interval?
+#
+# Pulse-domain honest. No musicality, groove, or meter claim — the only
+# signal this detector reads is the per-node ordered pulse-frame list
+# exported by the simulator. "Polyrhythmic" here means exactly
+# "rate_i / rate_j is within a few percent of p/q for some small p:q,
+# and holds across sub-windows of the run".
+#
+# Ratio family — POLY_RATIO_SET
+# -----------------------------
+# `((2, 3), (3, 4))`. Deliberately narrow:
+# - 1:2 is excluded because "half-time" is a weak claim — every
+#   frequency-doubled pair passes, including the ones whose alignment
+#   is an intrinsic-frequency coincidence with zero coupling and no
+#   rhythmic cohesion.
+# - 4:5 is excluded because at 2 % tolerance, intrinsic-frequency
+#   coincidences in the existing negative fixtures (e.g.
+#   `regime_drifting`'s 2.10/2.60 Hz pair at ratio 0.808 ≈ 4:5 within
+#   1 %) would force false positives. Adding 4:5 would require
+#   retuning `regime_drifting`, which is out of scope for this pass.
+# The narrow set still covers the two most rhythmically distinct
+# small-integer polyrhythms and is enough to exercise the detector.
+#
+# Analysis window
+# ---------------
+# `[warmup, T)` with warmup = `POLY_WARMUP_S = 1.0` s, matching the
+# other pair detectors. One window per run; the detector fires once
+# globally and its single `windows` entry spans the full analysis
+# region (per-pair sub-windows are an internal sustained-gate
+# mechanism, not exposed on `DetectionResult`).
+#
+# Rate measurement
+# ----------------
+# For each node, `rate = (n_pulses - 1) / (last_pulse_time -
+# first_pulse_time)`. This is the mean-inter-pulse-interval estimator,
+# free of the ±1-pulse window-boundary quantization that would make
+# `n / window_duration` unstable at short windows. It matches the
+# pulse-domain honesty of the detector: only pulse timestamps are
+# used — no phase, no phase velocity.
+#
+# Near-unity exclusion — POLY_NEAR_UNITY_MAX
+# ------------------------------------------
+# Pairs with `min_rate / max_rate > 0.85` are skipped before the ratio
+# search. Those are phase_beating / flam / phase_locked territory —
+# the pair shares a near-common rate, not a small-integer ratio.
+# `0.85` sits above the `(3, 4) = 0.75` target with headroom but well
+# below any plausible "essentially same rate" pair (locked pairs land
+# within 0.1 % of 1.0).
+#
+# Whole-window ratio gate — POLY_RATIO_TOL
+# ----------------------------------------
+# Pick the best `(p, q)` in `POLY_RATIO_SET` minimizing
+# `|ratio - p/q|`; require relative deviation
+# `|ratio - p/q| / (p/q) <= POLY_RATIO_TOL = 0.02` (2 %). Threshold
+# chosen from a survey of worst-case negatives across the existing
+# fixtures:
+#
+#   fixture                  nearest small-ratio pair    rel dev
+#   regime_drifting          (3.05, 4.45) → 2:3          2.7 %
+#   regime_drifting          (2.10, 3.05) → 2:3          3.2 %
+#   regime_two_cluster       inter-cluster   → 2:3       5.0 %
+#   regime_phase_beating     (4.5, 7.0)     → 2:3        3.6 %
+#   regime_phase_beating     (5.5, 7.0)     → 3:4        4.8 %
+#   regime_flam              (4, 5) → 4:5 (not in set) no match
+#
+# 2 % cleanly rejects all of them while the intended positive fixture
+# (`regime_polyrhythmic`, intrinsic 2.0 Hz / 3.0 Hz) sits far inside
+# the band (deviation < 0.5 %).
+#
+# Sub-window sustained gate
+# -------------------------
+# Split the analysis window into `POLY_SUB_WINDOWS = 3` equal thirds.
+# Each sub-window must carry at least `POLY_MIN_PULSES_PER_SUB = 3`
+# pulses on each pair member, and its per-window rate ratio must
+# match the SAME `(p, q)` within `POLY_SUB_WINDOW_RATIO_TOL = 0.04`
+# (4 %). The looser sub-window tolerance acknowledges that shorter
+# windows carry fewer pulses and thus noisier IPI-based rate
+# estimates; 4 % still rejects the drifting near-misses, which stay
+# close to their whole-window deviation across thirds.
+#
+# Pulse-count floor — POLY_MIN_PULSES_PER_NODE
+# --------------------------------------------
+# A pair is skipped unless each member fired at least 8 pulses in the
+# analysis window. At 2 Hz over an 8 s window that's comfortably met;
+# pairs with too few pulses can't support a stable rate estimate,
+# let alone a sustained-across-thirds claim.
+#
+# Confidence
+# ----------
+# Mean over firing pairs of `POLY_RATIO_TOL - ratio_dev` — "how far
+# inside the 2 % tolerance band the pair sat". Scale `[0, 0.02]` in
+# practice; the positive fixture's pair (near-zero deviation) sits
+# near the top of the band. `0.0` when the detector does not fire,
+# matching the other detectors' convention.
+POLY_WARMUP_S = 1.0
+POLY_RATIO_SET = ((2, 3), (3, 4))
+POLY_RATIO_TOL = 0.02
+POLY_NEAR_UNITY_MAX = 0.85
+POLY_SUB_WINDOWS = 3
+POLY_SUB_WINDOW_RATIO_TOL = 0.04
+POLY_MIN_PULSES_PER_NODE = 8
+POLY_MIN_PULSES_PER_SUB = 3
+
+
+def _poly_rate_from_pulse_times(times_s):
+    """Mean inter-pulse-interval rate (Hz) from a 1D ascending array of
+    pulse timestamps in seconds. Returns `None` if the array is too
+    short or degenerate (zero-span)."""
+    n = int(times_s.shape[0])
+    if n < 2:
+        return None
+    span = float(times_s[-1] - times_s[0])
+    if span <= 0.0:
+        return None
+    return (n - 1) / span
+
+
+def _polyrhythmic_pair_evidence(pulse_fired, control_rate_hz):
+    """Per-pair evidence list for `detect_polyrhythmic`.
+
+    Iterates unordered pairs `i < j`, applies the pulse-count /
+    near-unity / whole-window-ratio / sustained-across-thirds gates
+    in that order, and returns a list of dicts for every qualifying
+    pair:
+
+        {"i": i_slow, "j": j_fast, "p": int, "q": int,
+         "rate_slow": float, "rate_fast": float, "ratio": float,
+         "ratio_dev": float, "sub_window_ratios": list[float],
+         "sub_window_devs": list[float],
+         "n_pulses_slow": int, "n_pulses_fast": int}
+
+    `i_slow` / `j_fast` are node indices reordered so that
+    `rate_slow < rate_fast`; `p < q` matches (`p:q = slow:fast`).
+
+    Shared by the detector itself and by tests that want to inspect
+    which pairs contributed without re-running the simulator.
+    """
+    arr = np.asarray(pulse_fired)
+    if arr.ndim != 2:
+        raise ValueError(
+            f"pulse_fired must be 2D (T, N), got shape {arr.shape}"
+        )
+    T, N = arr.shape
+    ws = int(POLY_WARMUP_S * control_rate_hz)
+    we = T
+    if we <= ws:
+        return []
+    sub_edges_f = [
+        ws + int(round(k * (we - ws) / POLY_SUB_WINDOWS))
+        for k in range(POLY_SUB_WINDOWS + 1)
+    ]
+    sub_edges_s = [f / float(control_rate_hz) for f in sub_edges_f]
+    pulses = pulse_times_of(arr)
+    times_s = []
+    for i in range(N):
+        p = pulses[i]
+        p = p[(p >= ws) & (p < we)]
+        times_s.append(p.astype(np.float64) / float(control_rate_hz))
+
+    evidence = []
+    for i in range(N):
+        ti = times_s[i]
+        if ti.size < POLY_MIN_PULSES_PER_NODE:
+            continue
+        ri = _poly_rate_from_pulse_times(ti)
+        if ri is None:
+            continue
+        for j in range(i + 1, N):
+            tj = times_s[j]
+            if tj.size < POLY_MIN_PULSES_PER_NODE:
+                continue
+            rj = _poly_rate_from_pulse_times(tj)
+            if rj is None:
+                continue
+            r_lo = min(ri, rj)
+            r_hi = max(ri, rj)
+            if r_hi <= 0.0:
+                continue
+            ratio = r_lo / r_hi
+            if ratio > POLY_NEAR_UNITY_MAX:
+                continue
+            best_pq = None
+            best_dev = float("inf")
+            for (p, q) in POLY_RATIO_SET:
+                target = p / q
+                dev = abs(ratio - target) / target
+                if dev < best_dev:
+                    best_dev = dev
+                    best_pq = (p, q)
+            if best_dev > POLY_RATIO_TOL:
+                continue
+            target_pq = best_pq[0] / best_pq[1]
+            sub_ratios = []
+            sub_devs = []
+            sub_ok = True
+            for k in range(POLY_SUB_WINDOWS):
+                s_start_s = sub_edges_s[k]
+                s_end_s = sub_edges_s[k + 1]
+                sub_ti = ti[(ti >= s_start_s) & (ti < s_end_s)]
+                sub_tj = tj[(tj >= s_start_s) & (tj < s_end_s)]
+                if (sub_ti.size < POLY_MIN_PULSES_PER_SUB
+                        or sub_tj.size < POLY_MIN_PULSES_PER_SUB):
+                    sub_ok = False
+                    break
+                sub_ri = _poly_rate_from_pulse_times(sub_ti)
+                sub_rj = _poly_rate_from_pulse_times(sub_tj)
+                if sub_ri is None or sub_rj is None:
+                    sub_ok = False
+                    break
+                sub_hi = max(sub_ri, sub_rj)
+                if sub_hi <= 0.0:
+                    sub_ok = False
+                    break
+                sub_lo = min(sub_ri, sub_rj)
+                sub_ratio = sub_lo / sub_hi
+                sub_dev = abs(sub_ratio - target_pq) / target_pq
+                if sub_dev > POLY_SUB_WINDOW_RATIO_TOL:
+                    sub_ok = False
+                    break
+                sub_ratios.append(float(sub_ratio))
+                sub_devs.append(float(sub_dev))
+            if not sub_ok:
+                continue
+            if ri < rj:
+                i_slow, j_fast = i, j
+                rate_slow, rate_fast = ri, rj
+                n_slow, n_fast = int(ti.size), int(tj.size)
+            else:
+                i_slow, j_fast = j, i
+                rate_slow, rate_fast = rj, ri
+                n_slow, n_fast = int(tj.size), int(ti.size)
+            evidence.append({
+                "i": i_slow, "j": j_fast,
+                "p": int(best_pq[0]), "q": int(best_pq[1]),
+                "rate_slow": float(rate_slow),
+                "rate_fast": float(rate_fast),
+                "ratio": float(ratio),
+                "ratio_dev": float(best_dev),
+                "sub_window_ratios": sub_ratios,
+                "sub_window_devs": sub_devs,
+                "n_pulses_slow": n_slow,
+                "n_pulses_fast": n_fast,
+            })
+    return evidence
+
+
+def detect_polyrhythmic(pulse_fired, control_rate_hz):
+    """Fire on pair-wise small-integer pulse-rate ratios sustained across the run.
+
+    Defining condition
+    ------------------
+    Over the analysis window `[warmup, T)` with warmup =
+    `POLY_WARMUP_S = 1.0` s, at least one unordered pair `(i, j)`
+    satisfies all of:
+
+    - each member fired at least `POLY_MIN_PULSES_PER_NODE = 8`
+      pulses in the window;
+    - `min(rate_i, rate_j) / max(rate_i, rate_j) <=
+      POLY_NEAR_UNITY_MAX = 0.85` (the pair does NOT share a
+      near-common rate — that's phase_beating / flam / locked
+      territory);
+    - there exists `(p, q)` in `POLY_RATIO_SET = ((2, 3), (3, 4))`
+      whose relative deviation from the observed rate ratio is
+      `<= POLY_RATIO_TOL = 0.02` (2 %);
+    - in each of `POLY_SUB_WINDOWS = 3` equal thirds of the analysis
+      window, both nodes fired at least `POLY_MIN_PULSES_PER_SUB = 3`
+      pulses, and the sub-window rate ratio matches the SAME `(p, q)`
+      within `POLY_SUB_WINDOW_RATIO_TOL = 0.04` (4 %).
+
+    Parameters
+    ----------
+    pulse_fired : np.ndarray, shape `(T, N)`, bool
+        Per-frame pulse indicator from `state.npz`.
+    control_rate_hz : int
+        Frames per second of the input array.
+
+    Returns
+    -------
+    DetectionResult
+        `fired` is True iff at least one pair qualified. `windows` is
+        a single analysis-window entry `[(warmup_frames, T)]` — the
+        detector does not carve per-pair sub-windows into its public
+        result; the evidence is a property of the whole analysis
+        window, and the sub-window split is an internal sustained
+        gate, not a caller-visible partition. `confidence` is the
+        mean of `(POLY_RATIO_TOL - ratio_dev)` across firing pairs
+        — "how far inside the 2 % tolerance band the pair sat", in
+        `[0, POLY_RATIO_TOL]`. `longest_window_frames` is the length
+        of the analysis window.
+
+    Notes
+    -----
+    Depends only on `pulse_fired` — no `theta`, no `phase_vel`.
+    This is the pulse-domain honesty: a small-integer rate-ratio
+    claim needs nothing beyond pulse timestamps to state. For tests
+    and debugging that need to inspect *which* pairs contributed,
+    call `_polyrhythmic_pair_evidence` directly; the detector-level
+    return deliberately collapses the pair list into the standard
+    `DetectionResult` shape.
+    """
+    T = int(np.asarray(pulse_fired).shape[0])
+    ws = int(POLY_WARMUP_S * control_rate_hz)
+    evidence = _polyrhythmic_pair_evidence(pulse_fired, control_rate_hz)
+    if not evidence:
+        return DetectionResult(fired=False, windows=[], confidence=0.0, longest_window_frames=0)
+    mean_margin = float(np.mean([POLY_RATIO_TOL - e["ratio_dev"] for e in evidence]))
     return DetectionResult(
         fired=True,
         windows=[(ws, T)],

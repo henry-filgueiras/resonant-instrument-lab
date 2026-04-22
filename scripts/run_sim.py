@@ -40,6 +40,7 @@ from sim.detectors import (  # noqa: E402
     detect_flam,
     detect_phase_beating,
     detect_phase_locked,
+    detect_polyrhythmic,
 )
 from sim.garden import simulate  # noqa: E402
 
@@ -133,6 +134,7 @@ def _build_summary(cfg, config_path, out_dir):
     dr = detect_drifting(theta, rate)
     pb = detect_phase_beating(theta, phase_vel, pulse_fired, rate)
     fl = detect_flam(phase_vel, pulse_fired, rate)
+    ply = detect_polyrhythmic(pulse_fired, rate)
     dc = detect_dominant_cluster(theta, phase_vel, rate)
 
     r = kuramoto_order(theta)
@@ -172,6 +174,7 @@ def _build_summary(cfg, config_path, out_dir):
             "drifting": _detector_block(dr, rate),
             "phase_beating": _detector_block(pb, rate),
             "flam": _detector_block(fl, rate),
+            "polyrhythmic": _detector_block(ply, rate),
             "dominant_cluster": _detector_block(dc, rate),
         },
         "stats": stats,
@@ -207,6 +210,7 @@ def _render_summary_text(summary):
         _line("drifting", det["drifting"]),
         _line("phase_beating", det["phase_beating"]),
         _line("flam", det["flam"]),
+        _line("polyrhythmic", det["polyrhythmic"]),
         _line("dominant_cluster", det["dominant_cluster"]),
         "",
         f"  mean r(t)                    {stats['mean_r']:.3f}",

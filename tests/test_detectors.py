@@ -40,14 +40,22 @@ from sim.detectors import (  # noqa: E402
     PHASE_BEATING_MIN_R2,
     PHASE_BEATING_WARMUP_S,
     PHASE_LOCKED_MIN_S,
+    POLY_MIN_PULSES_PER_NODE,
+    POLY_NEAR_UNITY_MAX,
+    POLY_RATIO_SET,
+    POLY_RATIO_TOL,
+    POLY_SUB_WINDOW_RATIO_TOL,
+    POLY_WARMUP_S,
     _dominant_cluster_evidence,
     _flam_pair_evidence,
     _phase_beating_pair_evidence,
+    _polyrhythmic_pair_evidence,
     detect_dominant_cluster,
     detect_drifting,
     detect_flam,
     detect_phase_beating,
     detect_phase_locked,
+    detect_polyrhythmic,
 )
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
@@ -421,9 +429,119 @@ def test_detect_dominant_cluster_across_regimes():
     )
 
 
+# ---------------------------------------------------------------------------
+# polyrhythmic — fires only on the dedicated polyrhythmic fixture.
+#
+# The five earlier regime fixtures are all negatives for this detector:
+#   - regime_locked: all nodes frequency-lock at a common mean rate, so
+#     every pair sits near 1:1 — excluded by POLY_NEAR_UNITY_MAX.
+#   - regime_drifting: the near-misses to 2:3 land at 2.7 % / 3.2 %
+#     relative deviation — above the 2 % whole-window tolerance. The
+#     2.10/2.60 Hz pair sits within ~1 % of 4:5, which is exactly why
+#     4:5 is not in POLY_RATIO_SET for this pass.
+#   - regime_two_cluster: inter-cluster ratio ≈ 2.11/3.01 = 0.701,
+#     closest to 2:3 at ~5 %.
+#   - regime_phase_beating: the beating pair sits near 1:1 (excluded);
+#     distractors were retuned this pass (6.0 → 6.3 Hz) to break the
+#     two exact integer ratios (4.0/6.0 = 2:3 and 4.5/6.0 = 3:4) the
+#     old set carried.
+#   - regime_flam: the flam pair sits near 1:1 (excluded); the distractor
+#     pair matches 4:5, which is not in the detector's set.
+# regime_polyrhythmic is the single positive fixture: two nodes at 2.0
+# and 3.0 Hz with coupling weak enough that each runs at its intrinsic
+# rate, preserving a clean 2:3 pulse-rate ratio.
+
+def test_detect_polyrhythmic_across_regimes():
+    # (a) fires cleanly on the dedicated positive fixture
+    cfg, art = _run(CONFIGS_DIR / "regime_polyrhythmic.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    result = detect_polyrhythmic(art["pulse_fired"], rate)
+    assert result.fired, "polyrhythmic should fire on regime_polyrhythmic"
+    expected_window_frames = art["pulse_fired"].shape[0] - int(POLY_WARMUP_S * rate)
+    assert result.longest_window_frames == expected_window_frames
+    assert result.windows == [
+        (int(POLY_WARMUP_S * rate), art["pulse_fired"].shape[0])
+    ]
+    # Deviation well under 2 % → margin near the top of the [0, 0.02] band.
+    assert result.confidence > 0.5 * POLY_RATIO_TOL, (
+        f"expected ratio-margin more than half the {POLY_RATIO_TOL} tolerance, "
+        f"got confidence {result.confidence:.4f}"
+    )
+
+    # Exactly the (0, 1) pair contributes, locked to 2:3, with every
+    # sub-window inside the stricter sub-window tolerance.
+    evidence = _polyrhythmic_pair_evidence(art["pulse_fired"], rate)
+    assert len(evidence) == 1, f"expected one qualifying pair, got {len(evidence)}: {evidence}"
+    e = evidence[0]
+    assert (e["i"], e["j"]) == (0, 1)
+    assert (e["p"], e["q"]) == (2, 3)
+    assert (2, 3) in POLY_RATIO_SET
+    assert e["ratio_dev"] <= POLY_RATIO_TOL
+    assert e["n_pulses_slow"] >= POLY_MIN_PULSES_PER_NODE
+    assert e["n_pulses_fast"] >= POLY_MIN_PULSES_PER_NODE
+    assert e["rate_slow"] < e["rate_fast"]
+    # Slow rate ≈ 2 Hz, fast ≈ 3 Hz (intrinsic, within the weak-coupling shift).
+    assert abs(e["rate_slow"] - 2.0) < 0.05
+    assert abs(e["rate_fast"] - 3.0) < 0.05
+    assert len(e["sub_window_devs"]) == 3
+    for dev in e["sub_window_devs"]:
+        assert dev <= POLY_SUB_WINDOW_RATIO_TOL
+    # Pair rate ratio is below the near-unity gate (so it's a legitimate
+    # small-integer claim, not a phase_beating / flam / lock near-miss).
+    assert e["ratio"] <= POLY_NEAR_UNITY_MAX
+
+    # (b) silent on locked — every pair sits near 1:1
+    cfg_l, art_l = _run(CONFIGS_DIR / "regime_locked.yaml")
+    _assert_silent(
+        detect_polyrhythmic(art_l["pulse_fired"], cfg_l["run"]["control_rate_hz"]),
+        "polyrhythmic", "regime_locked",
+    )
+
+    # (c) silent on drifting — near-misses to 2:3 sit at >2 % relative
+    # deviation; the 4:5 near-miss is rejected because 4:5 is not in
+    # POLY_RATIO_SET this pass
+    cfg_d, art_d = _run(CONFIGS_DIR / "regime_drifting.yaml")
+    _assert_silent(
+        detect_polyrhythmic(art_d["pulse_fired"], cfg_d["run"]["control_rate_hz"]),
+        "polyrhythmic", "regime_drifting",
+    )
+
+    # (d) silent on two_cluster — inter-cluster ratio ~5 % above 2:3
+    cfg_t, art_t = _run(CONFIGS_DIR / "regime_two_cluster.yaml")
+    _assert_silent(
+        detect_polyrhythmic(art_t["pulse_fired"], cfg_t["run"]["control_rate_hz"]),
+        "polyrhythmic", "regime_two_cluster",
+    )
+
+    # (e) silent on phase_beating — retuned distractors leave no exact
+    # 2:3 or 3:4 pair
+    cfg_b, art_b = _run(CONFIGS_DIR / "regime_phase_beating.yaml")
+    _assert_silent(
+        detect_polyrhythmic(art_b["pulse_fired"], cfg_b["run"]["control_rate_hz"]),
+        "polyrhythmic", "regime_phase_beating",
+    )
+
+    # (f) silent on flam — distractor pair matches 4:5, which is not in
+    # the detector's ratio set
+    cfg_f, art_f = _run(CONFIGS_DIR / "regime_flam.yaml")
+    _assert_silent(
+        detect_polyrhythmic(art_f["pulse_fired"], cfg_f["run"]["control_rate_hz"]),
+        "polyrhythmic", "regime_flam",
+    )
+
+    print(
+        f"ok: polyrhythmic — polyrhythmic fixture fired "
+        f"(conf={result.confidence:.4f}, pair ({e['i']},{e['j']}) = "
+        f"{e['p']}:{e['q']}, rates {e['rate_slow']:.3f}/{e['rate_fast']:.3f} Hz, "
+        f"ratio dev {e['ratio_dev']*100:.2f}%); "
+        f"locked, drifting, two_cluster, phase_beating, flam silent"
+    )
+
+
 if __name__ == "__main__":
     test_detect_phase_locked_across_regimes()
     test_detect_drifting_across_regimes()
     test_detect_phase_beating_across_regimes()
     test_detect_flam_across_regimes()
+    test_detect_polyrhythmic_across_regimes()
     test_detect_dominant_cluster_across_regimes()

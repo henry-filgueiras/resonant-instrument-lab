@@ -20,7 +20,13 @@
 # Six distractor nodes at well-separated frequencies (4.0–7.0 Hz, all
 # adjacent gaps ≥ 0.5 Hz ≈ 3.14 rad/s) sit clustered in a far corner
 # of the unit square so they neither couple into the beating pair nor
-# form near-frequency candidates among themselves.
+# form near-frequency candidates among themselves. Distractor 6.3 Hz
+# (was 6.0 Hz) breaks two exact small-integer ratios — 4.0/6.0 = 2:3
+# and 4.5/6.0 = 3:4 — that would otherwise force a false positive on
+# `detect_polyrhythmic`; 6.3 Hz keeps both gaps above the 0.5 Hz
+# distractor-spacing rule and pushes the nearest small-ratio match
+# (3:4 with 4.5 Hz) out to ~4.8 % relative deviation, safely above
+# the detector's 2 % whole-window tolerance.
 # Duration 12 s covers ~2 full beat cycles, satisfying the detector's
 # 2π coverage requirement with margin.
 
@@ -46,7 +52,7 @@ scene:
     - {pos: [0.90, 0.30], omega_0_hz: 4.50, gamma: 0.10, voice: 3}
     - {pos: [0.90, 0.50], omega_0_hz: 5.00, gamma: 0.10, voice: 4}
     - {pos: [0.90, 0.70], omega_0_hz: 5.50, gamma: 0.10, voice: 5}
-    - {pos: [0.90, 0.90], omega_0_hz: 6.00, gamma: 0.10, voice: 6}
+    - {pos: [0.90, 0.90], omega_0_hz: 6.30, gamma: 0.10, voice: 6}
     - {pos: [0.10, 0.90], omega_0_hz: 7.00, gamma: 0.10, voice: 7}
   coupling:
     K0: 0.30        # rad/s — weak; pair coupling ~0.15 rad/s, below lock

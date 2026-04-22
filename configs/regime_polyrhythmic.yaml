@@ -1,0 +1,81 @@
+# Reference run config for the POLYRHYTHMIC regime template.
+#
+# Purpose: exercise `detect_polyrhythmic` with a single clean positive
+# case. The five existing regime fixtures are all negatives under the
+# detector's thresholds:
+#   - regime_locked: all nodes frequency-lock at a common mean rate, so
+#     every pair ratio sits near 1:1, excluded by the `POLY_NEAR_UNITY`
+#     gate (rhythm-domain analogue of phase_beating / flam territory,
+#     not polyrhythm).
+#   - regime_drifting: the near-misses to 2:3 land at 2.7 % / 3.2 %
+#     relative deviation — above the detector's 2 % whole-window
+#     tolerance. One pair at 2.10/2.60 Hz lands within 1 % of 4:5,
+#     which is exactly why 4:5 was dropped from the detector's
+#     small-ratio set in this pass.
+#   - regime_two_cluster: inter-cluster rate ratio ≈ 2.11/3.01 = 0.701,
+#     closest to 2:3 at ~5 % deviation — safely above 2 %.
+#   - regime_phase_beating: pair (0,1) sits near 1:1 (excluded);
+#     distractors were retuned this pass (6.0 → 6.3 Hz) to break the
+#     two exact integer ratios the old set contained.
+#   - regime_flam: pair (0,1) near 1:1 (excluded); distractor pair
+#     (4,5 Hz) matches 4:5 but 4:5 is not in this detector's set.
+# None of them contains a pair whose observed pulse rates sit in a
+# small-integer 2:3 or 3:4 ratio within 2 % over a sustained interval.
+# This fixture supplies one.
+#
+# Tuning (polyrhythmic pair). Two nodes at 2.00 and 3.00 Hz (intrinsic
+# ratio 2:3 exactly, Δω ≈ 6.28 rad/s). Positions 0.08 apart through a
+# narrow σ = 0.15 kernel give effective pair coupling K_ij ≈ 0.5 ·
+# exp(-0.53) ≈ 0.294 rad/s — well below the two-oscillator Kuramoto
+# lock threshold |Δω|/2 ≈ 3.14 rad/s, so the pair does NOT frequency-
+# lock. Each oscillator runs at its intrinsic rate (mean-rate
+# correction at this K/Δω ratio is O((K/Δω)^2) ≈ 0.2 %), preserving
+# the clean 2:3 pulse-rate signature.
+#
+# Tuning (distractors). Two nodes at 4.2 and 4.8 Hz clustered in a
+# far corner so their cross-coupling with the pair is negligible
+# (~0.004 rad/s through the narrow σ=0.15 kernel). The distractor pair
+# (4.2, 4.8) has ratio 0.875 — above the `POLY_NEAR_UNITY_MAX = 0.85`
+# gate, excluded. Cross pairs (pair vs distractor): 2.0/4.2 = 0.476
+# (no ratio match), 2.0/4.8 = 0.417 (no match), 3.0/4.2 = 0.714 (3:4
+# rel dev 4.8 %, rejected at 2 %), 3.0/4.8 = 0.625 (2:3 rel dev 6.3 %,
+# rejected). Only the (0,1) pair survives every gate.
+#
+# Duration 10 s gives a 9 s analysis window after the 1 s warmup skip,
+# so the slow node sees ~18 pulses and the fast node ~27 — comfortably
+# above the `POLY_MIN_PULSES_PER_NODE = 8` gate, and each of the three
+# sub-windows carries ~6 / ~9 pulses, above `POLY_MIN_PULSES_PER_SUB
+# = 3`.
+
+version: 1
+
+meta:
+  name: regime_polyrhythmic
+  notes: >
+    POLYRHYTHMIC reference — two nodes at 2.0 and 3.0 Hz (exact 2:3
+    intrinsic ratio) positioned close together but coupled only weakly
+    enough through a narrow distance kernel to keep each running at
+    its intrinsic rate. Two distractor nodes at 4.2 and 4.8 Hz in a
+    far corner so no other pair enters a 2:3 or 3:4 band. No noise,
+    no events — ratio signature is deterministic under (config + seed).
+
+scene:
+  N: 4
+  nodes:
+    # Polyrhythmic pair — close in position, 2:3 in frequency.
+    - {pos: [0.40, 0.50], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.48, 0.50], omega_0_hz: 3.00, gamma: 0.10, voice: 1}
+    # Distractors — far corner; no 2:3 or 3:4 pair with anyone.
+    - {pos: [0.90, 0.15], omega_0_hz: 4.20, gamma: 0.10, voice: 2}
+    - {pos: [0.90, 0.85], omega_0_hz: 4.80, gamma: 0.10, voice: 3}
+  coupling:
+    K0: 0.50        # rad/s — pair effective coupling ~0.29 rad/s, well below lock threshold
+    sigma: 0.15     # narrow kernel; distractor-pair coupling negligible
+  noise:
+    eta: 0.00       # deterministic — keeps the rate ratio clean
+
+run:
+  duration_s: 10.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42
