@@ -75,23 +75,23 @@ printf '\n'
 printf 'demo artifacts regenerated under runs/demo/.\n'
 printf 'starting static server on http://localhost:%s (bind 127.0.0.1).\n\n' "$PORT"
 
+printf 'Intervention Atlas — brittle_lock (every single-node ablation breaks the lock; nudges separate brittle vs robust):\n'
+printf '  %s?atlas=../runs/demo/brittle_lock/atlas.json&select=ablate_n4\n\n' "$BASE"
+
+printf 'Intervention Atlas — unstable_bridge (which single-node removal collapses the cluster?):\n'
+printf '  %s?atlas=../runs/demo/unstable_bridge/atlas.json&select=ablate_n0\n\n' "$BASE"
+
 printf 'A/B comparison — locked vs two_cluster (the dominant_cluster flip):\n'
 printf '  %s?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/two_cluster/summary.json\n\n' "$BASE"
 
 printf 'A/B comparison — two_cluster vs phase_beating (dominant_cluster vs drift+beating):\n'
 printf '  %s?summaryA=../runs/demo/two_cluster/summary.json&summaryB=../runs/demo/phase_beating/summary.json\n\n' "$BASE"
 
-printf 'A/B comparison — unstable_bridge single-run (counterfactual detector fires):\n'
-printf '  %s?summaryA=../runs/demo/unstable_bridge/summary.json\n\n' "$BASE"
-
 printf 'A/B comparison — locked vs brittle_lock (both phase-lock; only one breaks under a +0.25 Hz nudge):\n'
 printf '  %s?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/brittle_lock/summary.json\n\n' "$BASE"
 
-printf 'Intervention Atlas — brittle_lock (every single-node ablation breaks the lock; nudges separate brittle vs robust):\n'
-printf '  %s?atlas=../runs/demo/brittle_lock/atlas.json\n\n' "$BASE"
-
-printf 'Intervention Atlas — unstable_bridge (which single-node removal collapses the cluster?):\n'
-printf '  %s?atlas=../runs/demo/unstable_bridge/atlas.json\n\n' "$BASE"
+printf 'A/B comparison — unstable_bridge single-run (counterfactual detector fires):\n'
+printf '  %s?summaryA=../runs/demo/unstable_bridge/summary.json\n\n' "$BASE"
 
 printf 'Single-run views (one per fixture):\n'
 for name in "${FIXTURES[@]}"; do
