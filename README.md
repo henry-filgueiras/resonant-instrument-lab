@@ -32,7 +32,7 @@ Detectors are the hardest part of the project and must pass a human sniff test b
 
 One-liner launcher: `./run.sh` creates a `.venv` if needed, regenerates demo artifacts for every fixture under `runs/demo/`, prints copy-pasteable browser URLs (including a `locked` vs `two_cluster` comparison that shows the `dominant_cluster` detector flip), and starts a static server on `http://localhost:8000`. `PORT=9000 ./run.sh` overrides the port; Ctrl-C stops the server.
 
-Six regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
+Seven regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
 
 ```
 $ python scripts/run_sim.py --config configs/regime_locked.yaml --out runs/demo/locked --summary
@@ -47,13 +47,14 @@ regime summary — configs/regime_locked.yaml
   flam            : silent
   polyrhythmic    : silent
   dominant_cluster: silent
+  unstable_bridge : silent
 
   mean r(t)                    0.981
   tail-1s r                    0.995
   tail 2-way velocity sep.     0.00
 ```
 
-Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and `dominant_cluster` fires on the clean 4+4 velocity split with both sub-groups internally locked, while the tail 2-way velocity separability jumps to ~700; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field; swap for `configs/regime_flam.yaml` and `flam` fires on the frequency-locked near-unison pair; swap for `configs/regime_polyrhythmic.yaml` and `polyrhythmic` fires on the 2:3 pulse-rate ratio. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
+Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and `dominant_cluster` fires on the clean 4+4 velocity split with both sub-groups internally locked, while the tail 2-way velocity separability jumps to ~700; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field; swap for `configs/regime_flam.yaml` and `flam` fires on the frequency-locked near-unison pair; swap for `configs/regime_polyrhythmic.yaml` and `polyrhythmic` fires on the 2:3 pulse-rate ratio; swap for `configs/regime_unstable_bridge.yaml` and `unstable_bridge` (the first counterfactual detector) fires on a bridge-held 3-node cluster whose coherence vanishes when the central bridge node is ablated — the detector proves this by running `sim.ablate.ablate_node` on every cluster member internally and flagging the nodes whose removal collapses surviving-member `local_r` below 0.9. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
 
 Add `--summary-json` to also write the same verdicts and stats to `summary.json` in the output directory — a machine-readable seam for programmatic / browser consumers. Both views are rendered from one shared builder so they cannot drift.
 
@@ -83,4 +84,4 @@ Semantics for node ablation are *decouple-and-silence*: the ablated node is remo
 
 ## Status
 
-v0, simulator + six detectors + counterfactual (`sim.ablate`) scaffolding landed. No model code yet.
+v0, simulator + seven detectors (six observational + one counterfactual via `sim.ablate`) + seven regime fixtures landed. No model code yet.

@@ -1,8 +1,8 @@
 """First semantic-detector layer.
 
 Thin, deterministic detectors built on top of `sim.derived` primitives.
-Two global-coherence detectors, three pairwise rhythm detectors, and
-one cluster-structure detector:
+Two global-coherence detectors, three pairwise rhythm detectors, one
+cluster-structure detector, and one counterfactual detector:
 
 - `detect_phase_locked`     — sustained high global coherence.
 - `detect_drifting`         — sustained low global coherence.
@@ -17,6 +17,9 @@ one cluster-structure detector:
 - `detect_dominant_cluster` — a velocity-gap partition that yields a
   coherent, nontrivially-sized sub-group cleanly separated from the
   rest of the ensemble.
+- `detect_unstable_bridge`  — (counterfactual) nodes whose ablation
+  collapses a previously coherent baseline cluster's local coherence.
+  The first detector that routes evidence through `sim.ablate`.
 
 Threshold policy
 ----------------
@@ -1128,5 +1131,245 @@ def detect_dominant_cluster(theta, phase_vel, control_rate_hz):
         fired=True,
         windows=[(ws, T)],
         confidence=mean_margin,
+        longest_window_frames=tail_frames,
+    )
+
+
+# --- unstable_bridge -------------------------------------------------------
+# Counterfactual detector. Asks: is there a node whose ablation collapses
+# a previously coherent baseline cluster's local coherence?
+#
+# First detector that consumes `sim.ablate`. Per `DESIGN_V0.md §10.1`,
+# counterfactual detectors must route intervention evidence through
+# `sim.ablate` only — no ad-hoc back door. Applicability is strict:
+# the baseline run must already exhibit a coherent cluster structure
+# (`dominant_cluster` must fire), otherwise there is no structure to
+# destabilize and the detector is silent by construction.
+#
+# Detection rule (ONTOLOGY.md sketch, v0)
+# ---------------------------------------
+# For each baseline cluster (as returned by `cluster_assignments` over
+# the tail-window mean velocity) whose tail-window `local_r` clears
+# `DOMINANT_CLUSTER_MIN_LOCAL_R = 0.9` — "there is coherence to lose":
+#   For each node k in that cluster with at least 2 surviving members:
+#     Run `sim.ablate.ablate_node(cfg, node=k)` into a scratch dir.
+#     Compute tail-window `local_r` of the surviving cluster members
+#     (baseline cluster minus {k}) on the ablated state.
+#     Flag k as a bridge if `r_post < DOMINANT_CLUSTER_MIN_LOCAL_R`.
+#
+# The gate is the SAME 0.9 threshold `detect_phase_locked` and
+# `detect_dominant_cluster` both use: a cluster is "coherent" when it
+# would lock by the ensemble's own standard. The bridge claim is that
+# ablating one node specifically makes the cluster stop qualifying —
+# crossing the same line, in the other direction.
+#
+# Why re-use `cluster_assignments` instead of the `_dominant_cluster_
+# evidence` cluster list
+# -----------------------------------------------------------------
+# The raw partition sees every node; the evidence helper filters to
+# coherent clusters only. We want both clusters visible so that a
+# later, subtler detector (e.g. "bridge between two partially-coherent
+# groups") can inherit this scaffolding without API change. The
+# applicability gate still comes from `_dominant_cluster_evidence`
+# (we require it to be non-empty), so silent-baseline fixtures skip
+# the whole ablation loop.
+#
+# Budget
+# ------
+# O(N) sim reruns per detector call, fully deterministic. At v0
+# fixture sizes (N ≤ 8) this is cheap (~0.5 s per ablation → ~4 s
+# worst case). No candidate-set pruning — the brief prefers simplicity
+# over cleverness at current sizes.
+#
+# Confidence
+# ----------
+# Mean over bridge nodes of `(r_pre − r_post)` — "how much coherence
+# was lost, per bridge, averaged over bridges". Scale is `[0, 1]` in
+# principle; on the `regime_unstable_bridge` fixture a single bridge
+# fires with a ~0.33 margin. `0.0` when the detector does not fire,
+# matching the other detectors' convention.
+#
+# Per-node bridge identity
+# ------------------------
+# Lives behind `_unstable_bridge_evidence`, per the project's
+# established pattern. `DetectionResult` stays the uniform shape.
+UNSTABLE_BRIDGE_TAIL_S = DOMINANT_CLUSTER_TAIL_S  # reuse — same 3 s tail
+UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE = 3              # need ≥ 2 survivors after removing k
+
+
+def _unstable_bridge_evidence(cfg, theta, phase_vel, control_rate_hz, *, work_dir=None):
+    """Per-bridge evidence list for `detect_unstable_bridge`.
+
+    Applies the baseline applicability gate (`dominant_cluster` must
+    fire) first; returns `[]` if it fails. Otherwise iterates every
+    baseline cluster with tail-window `local_r >=
+    DOMINANT_CLUSTER_MIN_LOCAL_R` and size `>=
+    UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE`, running one ablation per member
+    and recording the nodes whose removal drops the surviving-member
+    `local_r` below the same gate:
+
+        {"node": int, "cluster_idx": int,
+         "cluster_members": np.ndarray[int],
+         "baseline_local_r": float, "ablated_local_r": float,
+         "drop": float}
+
+    Parameters
+    ----------
+    cfg : dict
+        Validated v0 config. Required — this detector runs counterfactual
+        simulations via `sim.ablate.ablate_node` and therefore needs the
+        scene + run spec, not just observable state.
+    theta, phase_vel : np.ndarray, shape `(T, N)`
+        Baseline state arrays from simulating `cfg`. The caller is
+        expected to have already run the baseline; the detector does
+        not re-simulate the baseline to save one sim.
+    control_rate_hz : int
+        Frames per second of the state arrays.
+    work_dir : pathlib.Path | str | None, optional
+        Scratch directory to write ablation artifact bundles into. If
+        `None`, a fresh `TemporaryDirectory` is created and cleaned up
+        at function exit. Pass an explicit path to keep ablated runs
+        on disk for inspection.
+
+    Shared by the detector itself and by tests that want to inspect
+    which nodes contributed without re-running the simulator.
+    """
+    import tempfile
+    from pathlib import Path
+
+    # Late imports to keep `sim.detectors` loadable in environments
+    # that don't have the full sim stack (e.g. partial unit tests).
+    from sim.ablate import ablate_node
+
+    theta = np.asarray(theta)
+    phase_vel = np.asarray(phase_vel)
+    if theta.ndim != 2 or phase_vel.shape != theta.shape:
+        raise ValueError(
+            "theta and phase_vel must share shape (T, N); "
+            f"got {theta.shape}, {phase_vel.shape}"
+        )
+
+    baseline_ev = _dominant_cluster_evidence(theta, phase_vel, control_rate_hz)
+    if not baseline_ev:
+        return []
+
+    T, _ = theta.shape
+    tail_frames = min(int(UNSTABLE_BRIDGE_TAIL_S * control_rate_hz), T)
+    if tail_frames < 1:
+        return []
+
+    v_tail = mean_phase_velocity(phase_vel, start_idx=-tail_frames)
+    ca = cluster_assignments(v_tail, n_clusters=2)
+    theta_tail = theta[-tail_frames:]
+
+    def _run_loop(work_path):
+        out = []
+        for cidx, members in enumerate(ca.members):
+            if members.size < UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE:
+                continue
+            r_pre = float(local_kuramoto_order(theta_tail, members).mean())
+            if r_pre < DOMINANT_CLUSTER_MIN_LOCAL_R:
+                continue
+            for k in members:
+                k = int(k)
+                survivors = np.array(
+                    [int(m) for m in members if int(m) != k],
+                    dtype=np.int64,
+                )
+                sub = work_path / f"ablate_c{cidx}_n{k}"
+                ablate_node(cfg, sub, node=k)
+                with np.load(sub / "state.npz") as st:
+                    a_theta = st["theta"]
+                r_post = float(
+                    local_kuramoto_order(a_theta[-tail_frames:], survivors).mean()
+                )
+                if r_post < DOMINANT_CLUSTER_MIN_LOCAL_R:
+                    out.append({
+                        "node": k,
+                        "cluster_idx": int(cidx),
+                        "cluster_members": np.asarray(members),
+                        "baseline_local_r": r_pre,
+                        "ablated_local_r": r_post,
+                        "drop": r_pre - r_post,
+                    })
+        return out
+
+    if work_dir is None:
+        with tempfile.TemporaryDirectory() as tmp:
+            return _run_loop(Path(tmp))
+    return _run_loop(Path(work_dir))
+
+
+def detect_unstable_bridge(cfg, theta, phase_vel, control_rate_hz, *, work_dir=None):
+    """Fire on nodes whose ablation collapses a baseline cluster's coherence.
+
+    Defining condition
+    ------------------
+    Over the tail analysis window `[T − tail_frames, T)` with
+    `tail_frames = UNSTABLE_BRIDGE_TAIL_S · control_rate_hz` (3 s):
+
+    - `detect_dominant_cluster` must fire on the baseline run —
+      applicability gate. Runs without any coherent cluster structure
+      cannot produce a bridge.
+    - For at least one baseline cluster (from `cluster_assignments(
+      v_tail, n_clusters=2)`) whose size is `>=
+      UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE = 3` and tail-window `local_r
+      >= DOMINANT_CLUSTER_MIN_LOCAL_R = 0.9`: there exists a member
+      node `k` such that, on a counterfactual run produced by
+      `sim.ablate.ablate_node(cfg, node=k)`, the tail-window `local_r`
+      of the surviving members (baseline cluster minus {k}) falls
+      *below* `DOMINANT_CLUSTER_MIN_LOCAL_R`.
+
+    Parameters
+    ----------
+    cfg : dict
+        Validated v0 config — the baseline scene. Required because
+        ablations re-simulate from this config via `sim.ablate`.
+    theta : np.ndarray, shape `(T, N)`
+        Baseline phase trajectories.
+    phase_vel : np.ndarray, shape `(T, N)`
+        Baseline per-frame phase velocities.
+    control_rate_hz : int
+        Frames per second of the state arrays.
+    work_dir : pathlib.Path | str | None, optional
+        Scratch directory for ablation artifact bundles. `None` uses
+        a short-lived `TemporaryDirectory`; pass a real path to keep
+        the bundles for inspection.
+
+    Returns
+    -------
+    DetectionResult
+        `fired` is True iff at least one bridge node was found.
+        `windows` is a single tail-window entry `[(T − tail_frames, T)]`
+        — the analysis boundary, same as `detect_dominant_cluster`.
+        `confidence` is the mean of `(baseline_local_r −
+        ablated_local_r)` across bridge nodes — "how much coherence
+        the ablation cost, averaged over bridges". Scale `[0, 1]` in
+        principle. `longest_window_frames` is the tail-window length.
+
+    Notes
+    -----
+    The public result deliberately collapses per-bridge detail into
+    the standard `DetectionResult` shape — consistent with the other
+    pair/cluster detectors. To inspect *which* nodes were flagged (and
+    with what baseline/ablated coherence), call
+    `_unstable_bridge_evidence` directly. The evidence helper is the
+    canonical place per-node bridge identity lives.
+    """
+    T = int(np.asarray(theta).shape[0])
+    tail_frames = min(int(UNSTABLE_BRIDGE_TAIL_S * control_rate_hz), T)
+    evidence = _unstable_bridge_evidence(
+        cfg, theta, phase_vel, control_rate_hz, work_dir=work_dir
+    )
+    if not evidence:
+        return DetectionResult(
+            fired=False, windows=[], confidence=0.0, longest_window_frames=0
+        )
+    mean_drop = float(np.mean([e["drop"] for e in evidence]))
+    ws = T - tail_frames
+    return DetectionResult(
+        fired=True,
+        windows=[(ws, T)],
+        confidence=mean_drop,
         longest_window_frames=tail_frames,
     )

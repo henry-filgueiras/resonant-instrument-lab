@@ -46,16 +46,20 @@ from sim.detectors import (  # noqa: E402
     POLY_RATIO_TOL,
     POLY_SUB_WINDOW_RATIO_TOL,
     POLY_WARMUP_S,
+    UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE,
+    UNSTABLE_BRIDGE_TAIL_S,
     _dominant_cluster_evidence,
     _flam_pair_evidence,
     _phase_beating_pair_evidence,
     _polyrhythmic_pair_evidence,
+    _unstable_bridge_evidence,
     detect_dominant_cluster,
     detect_drifting,
     detect_flam,
     detect_phase_beating,
     detect_phase_locked,
     detect_polyrhythmic,
+    detect_unstable_bridge,
 )
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
@@ -538,6 +542,138 @@ def test_detect_polyrhythmic_across_regimes():
     )
 
 
+# ---------------------------------------------------------------------------
+# unstable_bridge — fires only on the dedicated bridge fixture (counterfactual).
+#
+# This is the project's first counterfactual detector — it routes
+# intervention evidence through `sim.ablate.ablate_node`. It is also
+# the first detector with an asymmetric input signature (takes the
+# baseline config on top of the usual observable state, because the
+# ablation path needs the full scene+run spec).
+#
+# Applicability requires `detect_dominant_cluster` on baseline. Five of
+# the six earlier fixtures have no coherent cluster structure at all:
+#   - regime_locked: all velocities collapse → sep = 0, no partition.
+#   - regime_drifting: no cluster reaches the 0.9 local_r floor.
+#   - regime_phase_beating: likewise, no coherent sub-cluster.
+#   - regime_flam (N=4): coherent pair exists but sep is below the
+#     dominant_cluster gate.
+#   - regime_polyrhythmic (N=4): no clean two-way coherent split.
+# These skip the ablation loop entirely and stay silent by construction.
+#
+# regime_two_cluster has `dominant_cluster` firing on baseline (4+4 split
+# locked at local_r ≈ 0.99 per cluster) — so the detector DOES enter the
+# ablation loop there. It stays silent because ablating any one node
+# leaves the other 3 cluster members tightly coupled (observed r_post
+# >= 0.98 across every ablation), well above the 0.9 collapse gate. This
+# is the right answer: a balanced 4+4 cluster has no single load-bearing
+# bridge.
+#
+# regime_unstable_bridge is the dedicated positive: node 0 (a central
+# bridge) holds two geometrically distant, frequency-separated spokes
+# into a 3-node lock. Ablating node 0 collapses the trio's local_r from
+# ~0.93 to ~0.59. Ablating either spoke leaves the remaining bridge+
+# spoke pair locked (r_post > 0.98).
+
+def test_detect_unstable_bridge_across_regimes():
+    # (a) fires cleanly on the dedicated positive fixture
+    cfg, art = _run(CONFIGS_DIR / "regime_unstable_bridge.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    result = detect_unstable_bridge(cfg, art["theta"], art["phase_vel"], rate)
+    assert result.fired, "unstable_bridge should fire on regime_unstable_bridge"
+    T = art["theta"].shape[0]
+    tail_frames = int(UNSTABLE_BRIDGE_TAIL_S * rate)
+    assert result.longest_window_frames == tail_frames
+    assert result.windows == [(T - tail_frames, T)]
+    # Observed ~0.33 drop (local_r 0.93 → 0.59); assert well above noise.
+    assert result.confidence > 0.2, (
+        f"expected a material local_r drop (>0.2), got confidence {result.confidence:.4f}"
+    )
+
+    # Exactly node 0 contributes — the central bridge. Both spokes and
+    # every cluster-B member stay above the 0.9 post-ablation floor.
+    evidence = _unstable_bridge_evidence(cfg, art["theta"], art["phase_vel"], rate)
+    assert len(evidence) == 1, f"expected one bridge node, got {len(evidence)}: {evidence}"
+    e = evidence[0]
+    assert e["node"] == 0, f"expected bridge = node 0 (central), got {e['node']}"
+    assert e["baseline_local_r"] >= DOMINANT_CLUSTER_MIN_LOCAL_R, (
+        f"bridge's baseline cluster must be coherent; got r_pre={e['baseline_local_r']:.4f}"
+    )
+    assert e["ablated_local_r"] < DOMINANT_CLUSTER_MIN_LOCAL_R, (
+        f"bridge ablation must drop local_r below the gate; "
+        f"got r_post={e['ablated_local_r']:.4f}"
+    )
+    assert 0 in set(e["cluster_members"].tolist())
+
+    # (b) silent on locked — dominant_cluster fails precondition
+    cfg_l, art_l = _run(CONFIGS_DIR / "regime_locked.yaml")
+    _assert_silent(
+        detect_unstable_bridge(
+            cfg_l, art_l["theta"], art_l["phase_vel"], cfg_l["run"]["control_rate_hz"]
+        ),
+        "unstable_bridge", "regime_locked",
+    )
+
+    # (c) silent on drifting — dominant_cluster fails precondition
+    cfg_d, art_d = _run(CONFIGS_DIR / "regime_drifting.yaml")
+    _assert_silent(
+        detect_unstable_bridge(
+            cfg_d, art_d["theta"], art_d["phase_vel"], cfg_d["run"]["control_rate_hz"]
+        ),
+        "unstable_bridge", "regime_drifting",
+    )
+
+    # (d) silent on phase_beating — dominant_cluster fails precondition
+    cfg_b, art_b = _run(CONFIGS_DIR / "regime_phase_beating.yaml")
+    _assert_silent(
+        detect_unstable_bridge(
+            cfg_b, art_b["theta"], art_b["phase_vel"], cfg_b["run"]["control_rate_hz"]
+        ),
+        "unstable_bridge", "regime_phase_beating",
+    )
+
+    # (e) silent on flam — dominant_cluster fails precondition (sep < 5)
+    cfg_f, art_f = _run(CONFIGS_DIR / "regime_flam.yaml")
+    _assert_silent(
+        detect_unstable_bridge(
+            cfg_f, art_f["theta"], art_f["phase_vel"], cfg_f["run"]["control_rate_hz"]
+        ),
+        "unstable_bridge", "regime_flam",
+    )
+
+    # (f) silent on polyrhythmic — dominant_cluster fails precondition
+    cfg_p, art_p = _run(CONFIGS_DIR / "regime_polyrhythmic.yaml")
+    _assert_silent(
+        detect_unstable_bridge(
+            cfg_p, art_p["theta"], art_p["phase_vel"], cfg_p["run"]["control_rate_hz"]
+        ),
+        "unstable_bridge", "regime_polyrhythmic",
+    )
+
+    # (g) silent on two_cluster — dominant_cluster FIRES on baseline but
+    # the 4+4 split has no single load-bearing node. The detector must
+    # enter the ablation loop and decide silent honestly.
+    cfg_t, art_t = _run(CONFIGS_DIR / "regime_two_cluster.yaml")
+    result_t = detect_unstable_bridge(
+        cfg_t, art_t["theta"], art_t["phase_vel"], cfg_t["run"]["control_rate_hz"]
+    )
+    _assert_silent(result_t, "unstable_bridge", "regime_two_cluster")
+    ev_t = _unstable_bridge_evidence(
+        cfg_t, art_t["theta"], art_t["phase_vel"], cfg_t["run"]["control_rate_hz"]
+    )
+    assert ev_t == [], (
+        f"regime_two_cluster has no bridge node; evidence must be empty, got {ev_t}"
+    )
+
+    print(
+        f"ok: unstable_bridge — unstable_bridge fixture fired "
+        f"(conf={result.confidence:.4f}, bridge=node {e['node']} in cluster "
+        f"{e['cluster_idx']}, r_pre={e['baseline_local_r']:.3f} → "
+        f"r_post={e['ablated_local_r']:.3f}); locked, drifting, phase_beating, "
+        f"flam, polyrhythmic, two_cluster silent"
+    )
+
+
 if __name__ == "__main__":
     test_detect_phase_locked_across_regimes()
     test_detect_drifting_across_regimes()
@@ -545,3 +681,4 @@ if __name__ == "__main__":
     test_detect_flam_across_regimes()
     test_detect_polyrhythmic_across_regimes()
     test_detect_dominant_cluster_across_regimes()
+    test_detect_unstable_bridge_across_regimes()

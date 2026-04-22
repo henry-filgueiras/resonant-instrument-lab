@@ -41,6 +41,7 @@ from sim.detectors import (  # noqa: E402
     detect_phase_beating,
     detect_phase_locked,
     detect_polyrhythmic,
+    detect_unstable_bridge,
 )
 from sim.garden import simulate  # noqa: E402
 
@@ -136,6 +137,10 @@ def _build_summary(cfg, config_path, out_dir):
     fl = detect_flam(phase_vel, pulse_fired, rate)
     ply = detect_polyrhythmic(pulse_fired, rate)
     dc = detect_dominant_cluster(theta, phase_vel, rate)
+    # Counterfactual detector: runs O(N) ablations when applicable.
+    # Short-circuits to silent when `dominant_cluster` fails on baseline
+    # (5 of 7 current fixtures), keeping the cost free on most runs.
+    ub = detect_unstable_bridge(cfg, theta, phase_vel, rate)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -176,6 +181,7 @@ def _build_summary(cfg, config_path, out_dir):
             "flam": _detector_block(fl, rate),
             "polyrhythmic": _detector_block(ply, rate),
             "dominant_cluster": _detector_block(dc, rate),
+            "unstable_bridge": _detector_block(ub, rate),
         },
         "stats": stats,
     }
@@ -212,6 +218,7 @@ def _render_summary_text(summary):
         _line("flam", det["flam"]),
         _line("polyrhythmic", det["polyrhythmic"]),
         _line("dominant_cluster", det["dominant_cluster"]),
+        _line("unstable_bridge", det["unstable_bridge"]),
         "",
         f"  mean r(t)                    {stats['mean_r']:.3f}",
         f"  tail-1s r                    {stats['tail_1s_mean_r']:.3f}",

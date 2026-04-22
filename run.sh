@@ -24,7 +24,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
 
 PORT="${PORT:-8000}"
-FIXTURES=(locked drifting two_cluster phase_beating flam polyrhythmic)
+FIXTURES=(locked drifting two_cluster phase_beating flam polyrhythmic unstable_bridge)
 
 # --- 1. python binary discovery -------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
@@ -79,6 +79,9 @@ printf '  %s?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/two
 
 printf 'A/B comparison — two_cluster vs phase_beating (dominant_cluster vs drift+beating):\n'
 printf '  %s?summaryA=../runs/demo/two_cluster/summary.json&summaryB=../runs/demo/phase_beating/summary.json\n\n' "$BASE"
+
+printf 'A/B comparison — unstable_bridge single-run (counterfactual detector fires):\n'
+printf '  %s?summaryA=../runs/demo/unstable_bridge/summary.json\n\n' "$BASE"
 
 printf 'Single-run views (one per fixture):\n'
 for name in "${FIXTURES[@]}"; do

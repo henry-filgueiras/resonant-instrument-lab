@@ -536,6 +536,7 @@ const FLIP_SENTENCE = {
   flam:             { up: "A flam formed.",            down: "The flam dissolved." },
   polyrhythmic:     { up: "A polyrhythm locked in.",   down: "The polyrhythm dissolved." },
   dominant_cluster: { up: "A dominant cluster formed.", down: "The cluster dissolved." },
+  unstable_bridge:  { up: "A load-bearing bridge was detected.", down: "The bridge is no longer load-bearing." },
 };
 
 function takeawayForFlip({ name, to }) {
