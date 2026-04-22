@@ -1,0 +1,50 @@
+# Reference run config for the DRIFTING regime template.
+#
+# Purpose: the canonical example exercising every field of the v0 simulator
+# contract (DESIGN_V0.md §9.2). Written before any simulator code exists, to
+# force schema ambiguities out into the open.
+#
+# Regime shape: low K0 + moderate noise → ensemble should fail to phase-lock.
+# Event schedule exercises the three executable primary event types (setK,
+# nudge, impulse) without changing the regime's overall drifting character.
+# `move` is currently deferred (see DESIGN_V0.md §9.5) pending pos_t export;
+# `ablate_node` is counterfactual-only and not used in primary configs.
+
+version: 1
+
+meta:
+  name: regime_drifting
+  notes: >
+    DRIFTING reference — low K0, moderate eta. Nodes are arranged roughly
+    on a ring in the unit square with a spread of intrinsic frequencies
+    wide enough that the coupling cannot drag them into lock. Events are
+    included to give the schema validator (and eventually sim.run) a
+    realistic shape to check against; they do not rescue the regime.
+
+scene:
+  N: 8
+  nodes:
+    - {pos: [0.20, 0.30], omega_0_hz: 1.30, gamma: 0.10, voice: 0}
+    - {pos: [0.50, 0.20], omega_0_hz: 2.10, gamma: 0.10, voice: 1}
+    - {pos: [0.80, 0.30], omega_0_hz: 3.05, gamma: 0.12, voice: 2}
+    - {pos: [0.90, 0.55], omega_0_hz: 3.70, gamma: 0.12, voice: 3}
+    - {pos: [0.78, 0.78], omega_0_hz: 4.45, gamma: 0.15, voice: 4}
+    - {pos: [0.50, 0.85], omega_0_hz: 5.20, gamma: 0.15, voice: 5}
+    - {pos: [0.22, 0.72], omega_0_hz: 2.60, gamma: 0.10, voice: 6}
+    - {pos: [0.12, 0.50], omega_0_hz: 1.85, gamma: 0.10, voice: 7}
+  coupling:
+    K0: 0.12          # deliberately low — below the lock bifurcation for this ω spread
+    sigma: 0.40       # distance-kernel width in unit-square units
+  noise:
+    eta: 0.03         # 0 disables; small positive keeps regime away from accidental lock
+
+run:
+  duration_s: 8.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42
+
+events:
+  - {t: 2.00, type: setK,    K0: 0.18}                  # still sub-lock
+  - {t: 4.50, type: nudge,   node: 3, delta_hz: 0.25}   # small retune
+  - {t: 5.75, type: impulse, node: 5}                   # phase reset

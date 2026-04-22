@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Resonant Instrument Lab — live demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A browser-hosted live demo of the Resonant Instrument Lab: a bounded coupled-oscillator world, eight detector-named regimes, and the Intervention Atlas — a ranked list of single-node perturbations with per-click A/B comparison.">
+  <link rel="stylesheet" href="landing.css">
+</head>
+<body>
+<main>
+
+  <header class="hero">
+    <p class="kicker mono">resonant instrument lab · live demo</p>
+    <h1>A bounded world where semantic labels are computable from state.</h1>
+    <p class="lede">
+      Eight coupled oscillators in the unit square. A handful of detector-grounded
+      regimes — <em>phase-locked</em>, <em>drifting</em>, <em>phase beating</em>,
+      <em>flam</em>, <em>polyrhythmic</em>, <em>dominant cluster</em>,
+      <em>unstable bridge</em>, <em>brittle lock</em>. Every link below loads a
+      precomputed run directly in your browser: no backend, no WebAssembly
+      simulator, no model-in-the-loop. The simulator runs in Python at build
+      time; what you click is the same <code>summary.json</code> / <code>atlas.json</code>
+      an evaluation harness would read.
+    </p>
+  </header>
+
+  <section class="primary">
+    <h2>Start here</h2>
+    <p class="section-sub">
+      The two Intervention Atlas links are the strongest first-click —
+      they show an entire ranked sweep of single-node interventions against
+      a baseline run, and the A/B comparison updates live on every click.
+    </p>
+
+    <div class="cards">
+
+      <a class="card card-primary" href="demo/index.html?atlas=../runs/demo/brittle_lock/atlas.json&amp;select=ablate_n4">
+        <div class="card-art">
+          <img src="screenshots/hero-atlas-brittle_lock.png" alt="Intervention Atlas on regime_brittle_lock, with ablate_n4 preselected" loading="lazy">
+        </div>
+        <div class="card-body">
+          <span class="card-eyebrow mono">intervention atlas</span>
+          <h3>brittle_lock — which node is the lock brittle on?</h3>
+          <p>
+            Baseline phase-locks at <code>r ≈ 0.94</code>. Every single-node
+            ablation breaks the lock; the four per-node <code>+0.25 Hz</code>
+            nudges split cleanly into <em>brittle</em> (nodes 3, 4) and
+            <em>robust</em> (nodes 0, 1, 2) — the same brittle-node identity
+            <code>detect_brittle_lock</code> reports, but surfaced as an
+            interventional ranking instead of a single field.
+          </p>
+          <span class="card-cta mono">open atlas →</span>
+        </div>
+      </a>
+
+      <a class="card card-primary" href="demo/index.html?atlas=../runs/demo/unstable_bridge/atlas.json&amp;select=ablate_n0">
+        <div class="card-art">
+          <img src="screenshots/hero-atlas-unstable_bridge.png" alt="Intervention Atlas on regime_unstable_bridge, with ablate_n0 preselected" loading="lazy">
+        </div>
+        <div class="card-body">
+          <span class="card-eyebrow mono">intervention atlas</span>
+          <h3>unstable_bridge — which node holds the cluster together?</h3>
+          <p>
+            A three-node bridge + two-spoke structure with a distractor cluster.
+            <code>ablate node 0</code> — the bridge — lands near the top of the
+            ranking with three detector flips (<em>flam → silent</em>,
+            <em>phase_beating → FIRED</em>, <em>polyrhythmic → FIRED</em>). Press
+            <strong>play A / play B</strong> under the comparison card to hear
+            the whole raster dissolve when the bridge is removed.
+          </p>
+          <span class="card-cta mono">open atlas →</span>
+        </div>
+      </a>
+
+    </div>
+
+    <div class="cards cards-secondary">
+
+      <a class="card" href="demo/index.html?summaryA=../runs/demo/locked/summary.json&amp;summaryB=../runs/demo/two_cluster/summary.json">
+        <div class="card-art card-art-wide">
+          <img src="screenshots/hero-locked-vs-two_cluster.png" alt="A/B comparison: locked vs two_cluster" loading="lazy">
+        </div>
+        <div class="card-body">
+          <span class="card-eyebrow mono">a/b comparison</span>
+          <h3>locked vs two_cluster — a dominant_cluster flip</h3>
+          <p>
+            Left: the ensemble phase-locks, <code>r(t)</code> pinned near 1 and
+            every pulse aligned. Right: two coherent sub-groups lock separately,
+            global coherence oscillates, and the raster splits into two rhythms.
+            The comparison card reads the flip as one sentence.
+          </p>
+          <span class="card-cta mono">open comparison →</span>
+        </div>
+      </a>
+
+    </div>
+  </section>
+
+  <section class="explain">
+    <h2>What you're looking at</h2>
+
+    <div class="explain-grid">
+      <article>
+        <h3>The world</h3>
+        <p>
+          A Kuramoto-style simulator, <code>N ≤ 8</code> oscillators in the
+          unit square. Each node has a position, a natural frequency, and a
+          fixed-pitch voice; audio is pulse-driven (one short pitched click
+          per zero-crossing). Configs are single YAML files; runs are fully
+          deterministic under <code>(config + seed)</code> so the artifacts
+          you click in the browser are byte-identical to what the CI
+          regenerates.
+        </p>
+      </article>
+
+      <article>
+        <h3>A regime</h3>
+        <p>
+          A detector-named state the system can sustain for a while —
+          <em>phase-locked</em>, <em>drifting</em>, <em>phase beating</em>,
+          <em>flam</em>, <em>polyrhythmic</em>, <em>dominant cluster</em>,
+          <em>unstable bridge</em>, <em>brittle lock</em>. Each has a
+          deterministic detector that reads the simulator's state and returns
+          <em>fired</em> / <em>silent</em> plus a confidence margin. Labels
+          are ground truth, not model outputs.
+        </p>
+      </article>
+
+      <article>
+        <h3>The Intervention Atlas</h3>
+        <p>
+          For one baseline run, enumerate every single-node intervention the
+          simulator exposes — <code>ablate_node(k)</code> and
+          <code>nudge_node(k, +0.25 Hz)</code> for each <code>k ∈ [0, N)</code> —
+          re-simulate each one, and rank by how much the detector verdicts move.
+          Score is one line:
+          <code>(#detector flips vs baseline) + |Δ tail_1s_mean_r|</code>.
+          Each row carries a plain-English explanation, so the ranking is
+          readable without opening the JSON.
+        </p>
+      </article>
+
+      <article>
+        <h3>Hearing the intervention</h3>
+        <p>
+          Each run emits a short <code>audio.wav</code>: one pitched click per
+          pulse, pitched as <code>180 + 80·ω₀ Hz</code> so nodes are audibly
+          distinguishable. A <code>+0.25 Hz</code> nudge is itself audible —
+          the pitch shifts. The A/B playback strip under the comparison card
+          lets you <em>swap</em> two sync'd audio elements mid-play so you
+          hear the flip without losing position.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="catalogue">
+    <h2>All eight regimes</h2>
+    <p class="section-sub">
+      One single-run view per fixture — the detector stack on the left,
+      topology and dynamics on the right, raw <code>summary.json</code> in a
+      disclosure at the bottom.
+    </p>
+    <ul class="fixture-list mono">
+      <li><a href="demo/index.html?summaryA=../runs/demo/locked/summary.json">locked</a>
+        <span class="fixture-note">phase-locked — one ensemble, <code>r ≈ 0.99</code>.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/drifting/summary.json">drifting</a>
+        <span class="fixture-note">sustained low coherence, <code>r &lt; 0.5</code>.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/two_cluster/summary.json">two_cluster</a>
+        <span class="fixture-note">clean 4+4 velocity split; <code>dominant_cluster</code> fires.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/phase_beating/summary.json">phase_beating</a>
+        <span class="fixture-note">near-frequency pair inside an otherwise incoherent field.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/flam/summary.json">flam</a>
+        <span class="fixture-note">frequency-locked pair firing 15–50 ms apart.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/polyrhythmic/summary.json">polyrhythmic</a>
+        <span class="fixture-note">2:3 pulse-rate ratio sustained across sub-windows.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/unstable_bridge/summary.json">unstable_bridge</a>
+        <span class="fixture-note">bridge-held cluster; counterfactual detector fires.</span></li>
+      <li><a href="demo/index.html?summaryA=../runs/demo/brittle_lock/summary.json">brittle_lock</a>
+        <span class="fixture-note">marginal lock that breaks under a <code>+0.25 Hz</code> nudge.</span></li>
+    </ul>
+  </section>
+
+  <footer class="foot">
+    <p>
+      Source on GitHub:
+      <a href="https://github.com/henry-filgueiras/resonant-instrument-lab">henry-filgueiras/resonant-instrument-lab</a>.
+      The repo's <code>README.md</code>, <code>DESIGN_V0.md</code>, and
+      <code>ONTOLOGY.md</code> carry the long-form design notes. This page and
+      every artifact it links to are produced by <code>scripts/build_pages.py</code>.
+    </p>
+  </footer>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,46 @@
+# Reference run config for the LOCKED regime template.
+#
+# Purpose: exercise the real Kuramoto dynamics under parameters chosen so
+# the ensemble actually phase-locks. Used as the fixture for the locking
+# smoke test (tests/test_locking.py).
+#
+# Tuning: eight nodes clustered near the centre of the unit square with a
+# tight ω spread (2.00–2.40 Hz, full width ≈ 2.5 rad/s in angular freq)
+# and K0 = 1.50 rad/s through a σ = 0.30 distance kernel. Effective per-
+# pair coupling at the typical 0.10–0.15 spacing is ~0.9–1.1 rad/s, so
+# each node sees ~6–7 rad/s of total coupling — well above the Kuramoto
+# bifurcation for this spread. The ensemble reaches r > 0.99 within the
+# first second and holds.
+
+version: 1
+
+meta:
+  name: regime_locked
+  notes: >
+    LOCKED reference — tight ω spread, strong distance-weighted coupling,
+    no noise, no events. Deterministic under (config + seed). The
+    last-second mean Kuramoto order parameter is expected to sit above
+    0.9 for any seed in this parameter regime.
+
+scene:
+  N: 8
+  nodes:
+    - {pos: [0.42, 0.48], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.50, 0.42], omega_0_hz: 2.10, gamma: 0.10, voice: 1}
+    - {pos: [0.58, 0.48], omega_0_hz: 2.15, gamma: 0.10, voice: 2}
+    - {pos: [0.60, 0.55], omega_0_hz: 2.20, gamma: 0.10, voice: 3}
+    - {pos: [0.55, 0.60], omega_0_hz: 2.25, gamma: 0.10, voice: 4}
+    - {pos: [0.48, 0.60], omega_0_hz: 2.30, gamma: 0.10, voice: 5}
+    - {pos: [0.42, 0.55], omega_0_hz: 2.35, gamma: 0.10, voice: 6}
+    - {pos: [0.45, 0.50], omega_0_hz: 2.40, gamma: 0.10, voice: 7}
+  coupling:
+    K0: 1.50       # rad/s; strong enough to lock this ω spread
+    sigma: 0.30
+  noise:
+    eta: 0.00      # no noise — clean lock
+
+run:
+  duration_s: 6.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

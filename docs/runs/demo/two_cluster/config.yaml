@@ -1,0 +1,60 @@
+# Reference run config for the TWO_CLUSTER regime template.
+#
+# Purpose: verify the simulator produces genuine intermediate structure —
+# not drift, not global lock — with two phase-coherent sub-groups running
+# at distinct mean frequencies.
+#
+# Tuning logic:
+#   - two groups of four nodes, spatial centroids at ≈(0.25, 0.46) and
+#     ≈(0.75, 0.46). Inter-centroid distance = 0.50.
+#   - narrow kernel: sigma = 0.15, so exp(-0.5/0.15) ≈ 0.036 (inter)
+#     vs exp(-0.10/0.15) ≈ 0.51 (intra). Ratio ~14×.
+#   - K0 = 2.0 rad/s → per-node intra-cluster coupling ≈ 3 rad/s (safely
+#     above the 1.26 rad/s intra-Δω, so each group locks), per-node
+#     cross-cluster coupling ≈ 0.29 rad/s (far below the 5.53 rad/s
+#     inter-cluster mean-ω gap, so the groups stay separate).
+#   - bimodal ω: group A ∈ [2.00, 2.20] Hz, group B ∈ [2.90, 3.10] Hz.
+#     Δf between mean frequencies = 0.88 Hz → drift period ≈ 1.13 s.
+#   - duration = 6.0 s → ~5 drift cycles in the tail window, enough for
+#     a stable time-average of the (oscillating) global coherence.
+# Expected tail behaviour (verified in tests/test_regimes.py):
+#   - global Kuramoto r oscillates in [0, ~0.95] with mean ≈ 0.6
+#   - per-node mean phase velocity splits into two tight clusters of
+#     four, separated by ≈ 5.5 rad/s
+#   - intra-cluster local r ≈ 0.95 in each group
+
+version: 1
+
+meta:
+  name: regime_two_cluster
+  notes: >
+    TWO_CLUSTER reference — two spatially-separated groups of four nodes
+    with intra-group coupling ~14× stronger than inter-group coupling
+    through a narrow distance kernel, plus a 0.9 Hz bimodal ω gap. Each
+    group locks internally; the groups drift apart in phase. No noise,
+    no events — determinism depends only on (config + seed).
+
+scene:
+  N: 8
+  nodes:
+    # Group A — left cluster, ω ≈ 2.1 Hz
+    - {pos: [0.20, 0.40], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.28, 0.48], omega_0_hz: 2.10, gamma: 0.10, voice: 1}
+    - {pos: [0.22, 0.52], omega_0_hz: 2.15, gamma: 0.10, voice: 2}
+    - {pos: [0.30, 0.43], omega_0_hz: 2.20, gamma: 0.10, voice: 3}
+    # Group B — right cluster, ω ≈ 3.0 Hz
+    - {pos: [0.70, 0.40], omega_0_hz: 2.90, gamma: 0.10, voice: 4}
+    - {pos: [0.78, 0.48], omega_0_hz: 3.00, gamma: 0.10, voice: 5}
+    - {pos: [0.72, 0.52], omega_0_hz: 3.05, gamma: 0.10, voice: 6}
+    - {pos: [0.80, 0.43], omega_0_hz: 3.10, gamma: 0.10, voice: 7}
+  coupling:
+    K0: 2.00        # rad/s — intra-group locking, inter-group negligible
+    sigma: 0.15     # narrow kernel sharpens the geometry separation
+  noise:
+    eta: 0.00
+
+run:
+  duration_s: 6.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

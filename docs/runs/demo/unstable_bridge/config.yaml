@@ -1,0 +1,69 @@
+# Reference run config for the UNSTABLE_BRIDGE regime template.
+#
+# Purpose: exercise `detect_unstable_bridge` with a clean positive case.
+# A 3-node cluster A whose coherence depends on a single bridge node:
+# node 0 (central bridge, ω=2.10 Hz) sits between two physically distant
+# spokes (node 1 at ω=2.00 Hz, node 2 at ω=2.20 Hz) placed at opposite
+# lower corners (d ≈ 0.90 apart). With K0=15.0 and σ=0.20:
+#   bridge–spoke:  d=0.492, K_eff ≈ 1.28 rad/s, |Δω|=0.63 rad/s,
+#                  K / (Δω/2) ≈ 4.1 — solid pair lock through the bridge
+#                  at ~23° phase offset, yielding baseline local_r ≈ 0.95.
+#   spoke–spoke:   d=0.90,  K_eff ≈ 0.17 rad/s, |Δω|=1.26 rad/s,
+#                  K / (Δω/2) ≈ 0.27 — far below the pair-lock threshold,
+#                  so the two spokes alone cannot lock.
+# Ablate the bridge and the two spokes desynchronize (beat period
+# ~5 s, well within the tail window); ablate either spoke and the
+# remaining bridge+spoke pair stays locked. The bridge is the one
+# load-bearing node of cluster A.
+#
+# Cluster B (nodes 3–7) is a tightly-packed distractor group in the
+# NE corner, needed so `dominant_cluster` fires on baseline — that is
+# the applicability precondition `detect_unstable_bridge` gates on.
+# Cluster B sits at ~0.82 from the bridge so its net coupling into
+# the bridge is small relative to the bridge–spoke links. Cluster B
+# frequencies (3.30–3.50 Hz, mean 3.40 Hz) are chosen so cross-cluster
+# rate ratios stay clear of 2:3 and 3:4 at the polyrhythmic detector's
+# 2 % whole-window tolerance (observed closest cross-ratio: A/B ≈ 0.618,
+# ≈ 7.4 % off 2:3). `detect_flam` co-fires on the bridge–spoke pairs
+# because the locked-phase offset (~30 ms) lands inside its 15–50 ms
+# band and each pair is well-isolated from the distant cluster B;
+# that is a legitimate co-occurrence, not a misfire.
+
+version: 1
+
+meta:
+  name: regime_unstable_bridge
+  notes: >
+    UNSTABLE_BRIDGE reference. Cluster A = bridge (node 0) + two far
+    spokes (nodes 1, 2). The bridge is load-bearing: its ablation
+    breaks A's coherence; ablating either spoke leaves the remaining
+    bridge+spoke pair locked. Cluster B = 5 tightly-packed distractors
+    at a frequency chosen to clear existing detector bands.
+    Deterministic under (config + seed).
+
+scene:
+  N: 8
+  nodes:
+    # Cluster A — bridge + two far spokes.
+    - {pos: [0.50, 0.30], omega_0_hz: 2.10, gamma: 0.10, voice: 0}  # BRIDGE
+    - {pos: [0.05, 0.10], omega_0_hz: 2.00, gamma: 0.10, voice: 1}  # SPOKE SW
+    - {pos: [0.95, 0.10], omega_0_hz: 2.20, gamma: 0.10, voice: 2}  # SPOKE SE
+    # Cluster B — NE corner distractor pack. Tight geometry for strong
+    # internal lock; at d_bridge-B ≈ 0.82 the cumulative pull on the
+    # bridge stays small compared to the bridge-spoke links.
+    - {pos: [0.90, 0.88], omega_0_hz: 3.30, gamma: 0.10, voice: 3}
+    - {pos: [0.95, 0.90], omega_0_hz: 3.35, gamma: 0.10, voice: 4}
+    - {pos: [0.90, 0.95], omega_0_hz: 3.40, gamma: 0.10, voice: 5}
+    - {pos: [0.95, 0.95], omega_0_hz: 3.45, gamma: 0.10, voice: 6}
+    - {pos: [0.85, 0.92], omega_0_hz: 3.50, gamma: 0.10, voice: 7}
+  coupling:
+    K0: 15.00       # rad/s — enough for bridge-spoke lock, too weak for spoke-spoke
+    sigma: 0.20
+  noise:
+    eta: 0.00
+
+run:
+  duration_s: 12.0  # longer than the ~5 s ablated-spoke beat period
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

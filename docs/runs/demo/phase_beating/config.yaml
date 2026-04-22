@@ -1,0 +1,67 @@
+# Reference run config for the PHASE_BEATING regime template.
+#
+# Purpose: exercise `detect_phase_beating` with a single clean positive
+# case. The three existing regime fixtures are all *negatives* under the
+# detector's thresholds:
+#   - regime_locked: all |Δω̄| ≈ 0 (below the lower gate).
+#   - regime_drifting: minimum candidate |Δω̄| ≈ 1.59 rad/s, above the
+#     1.5 rad/s "close in mean phase velocity" upper gate.
+#   - regime_two_cluster: intra-cluster |Δω̄| ≈ 0 (locked);
+#     inter-cluster |Δω̄| ≈ 5.6 rad/s (far-separated).
+# None of them exposes the narrow near-frequency-slow-drift band this
+# detector targets — so the detector would be untested on a positive.
+# This fixture supplies one.
+#
+# Tuning: two nodes at 2.00 and 2.20 Hz (Δω ≈ 1.26 rad/s, beat period
+# ≈ 5 s) positioned close together so the distance kernel couples them
+# weakly. K0 = 0.30 rad/s through σ = 0.15 gives an effective pair
+# coupling of ~0.15 rad/s — well below the |Δω|/2 ≈ 0.63 rad/s
+# two-oscillator Kuramoto lock threshold, so the pair drifts steadily.
+# Six distractor nodes at well-separated frequencies (4.0–7.0 Hz, all
+# adjacent gaps ≥ 0.5 Hz ≈ 3.14 rad/s) sit clustered in a far corner
+# of the unit square so they neither couple into the beating pair nor
+# form near-frequency candidates among themselves. Distractor 6.3 Hz
+# (was 6.0 Hz) breaks two exact small-integer ratios — 4.0/6.0 = 2:3
+# and 4.5/6.0 = 3:4 — that would otherwise force a false positive on
+# `detect_polyrhythmic`; 6.3 Hz keeps both gaps above the 0.5 Hz
+# distractor-spacing rule and pushes the nearest small-ratio match
+# (3:4 with 4.5 Hz) out to ~4.8 % relative deviation, safely above
+# the detector's 2 % whole-window tolerance.
+# Duration 12 s covers ~2 full beat cycles, satisfying the detector's
+# 2π coverage requirement with margin.
+
+version: 1
+
+meta:
+  name: regime_phase_beating
+  notes: >
+    PHASE_BEATING reference — two near-frequency nodes (2.00, 2.20 Hz)
+    with weak distance-weighted coupling; their relative phase drifts
+    steadily at ~1.26 rad/s (beat period ~5 s). Six distractor nodes at
+    well-separated frequencies yield no other near-frequency candidate
+    pair. No noise, no events.
+
+scene:
+  N: 8
+  nodes:
+    # Beating pair — close in position and frequency.
+    - {pos: [0.35, 0.50], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.45, 0.50], omega_0_hz: 2.20, gamma: 0.10, voice: 1}
+    # Distractors — spread in frequency, clustered far from the beating pair.
+    - {pos: [0.90, 0.10], omega_0_hz: 4.00, gamma: 0.10, voice: 2}
+    - {pos: [0.90, 0.30], omega_0_hz: 4.50, gamma: 0.10, voice: 3}
+    - {pos: [0.90, 0.50], omega_0_hz: 5.00, gamma: 0.10, voice: 4}
+    - {pos: [0.90, 0.70], omega_0_hz: 5.50, gamma: 0.10, voice: 5}
+    - {pos: [0.90, 0.90], omega_0_hz: 6.30, gamma: 0.10, voice: 6}
+    - {pos: [0.10, 0.90], omega_0_hz: 7.00, gamma: 0.10, voice: 7}
+  coupling:
+    K0: 0.30        # rad/s — weak; pair coupling ~0.15 rad/s, below lock
+    sigma: 0.15     # narrow kernel; cross-cluster coupling negligible
+  noise:
+    eta: 0.00       # deterministic — keep the beating signature clean
+
+run:
+  duration_s: 12.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

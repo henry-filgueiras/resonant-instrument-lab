@@ -1,0 +1,63 @@
+# Reference run config for the BRITTLE_LOCK regime template.
+#
+# Purpose: exercise `detect_brittle_lock` with a clean positive case.
+# Five nodes in a tight spatial cluster at a marginal coupling/ω-spread
+# ratio — the ensemble locks, but only barely. Baseline tail-3s
+# Kuramoto r ≈ 0.94 (comfortably above the phase_locked gate of 0.9,
+# but well below `regime_locked`'s ~0.995), and the lock is sustained
+# from t ≈ 2 s to the end of the run.
+#
+# Physical intuition:
+#   - ω spread 0.40 Hz (2.00 .. 2.40 Hz) → half-width ≈ 1.26 rad/s.
+#   - Tight geometry (all pairwise d ≈ 0.07–0.20), σ = 0.15 → K_shape
+#     ≈ 0.25–0.62 per pair.
+#   - K0 = 1.0 rad/s → per-node total coupling ≈ 1.6 rad/s, vs the
+#     ~1.26 rad/s worst-case |2π(ω_i − mean)|. The lock holds, but the
+#     margin is thin.
+#   - A +0.25 Hz (≈ +1.57 rad/s) nudge to one of the outer-ω nodes
+#     (2, 3, 4) pushes its natural frequency outside the coupling
+#     basin — the surviving ensemble cannot capture it, and global r
+#     collapses below the 0.9 gate. Inner-ω nodes (0, 1) stay in the
+#     basin when nudged and the lock holds.
+#
+# Expected detector matrix (verified in tests/test_detectors.py):
+#   - phase_locked   : FIRES    (baseline applicability gate)
+#   - brittle_lock   : FIRES    (nodes 2, 3, 4 all collapse r below 0.9
+#                                under a +0.25 Hz whole-run nudge)
+#   - dominant_cluster: silent (single cluster at N = 5)
+#   - drifting, phase_beating, flam, polyrhythmic: silent
+#
+# Why N = 5 and not 8: keep the ablation/nudge loop cheap (5 counter-
+# factual sims per detector call) and the fixture's physical story
+# uncluttered. At N = 5 there is one natural sub-group — the "lock" —
+# so brittleness is a property of the whole ensemble, not a subset.
+
+version: 1
+
+meta:
+  name: regime_brittle_lock
+  notes: >
+    BRITTLE_LOCK reference — tight spatial cluster at marginal
+    coupling/ω-spread ratio. Baseline ensemble locks (r > 0.9
+    sustained) but a single small frequency nudge to any outer-ω node
+    breaks the lock. Deterministic under (config + seed + nudge).
+
+scene:
+  N: 5
+  nodes:
+    - {pos: [0.45, 0.45], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.52, 0.45], omega_0_hz: 2.10, gamma: 0.10, voice: 1}
+    - {pos: [0.55, 0.52], omega_0_hz: 2.20, gamma: 0.10, voice: 2}
+    - {pos: [0.48, 0.55], omega_0_hz: 2.30, gamma: 0.10, voice: 3}
+    - {pos: [0.43, 0.50], omega_0_hz: 2.40, gamma: 0.10, voice: 4}
+  coupling:
+    K0: 1.00        # rad/s — enough to lock the 0.4 Hz ω spread, barely
+    sigma: 0.15     # tight kernel keeps intra-cluster coupling strong
+  noise:
+    eta: 0.00       # no noise — deterministic marginal lock
+
+run:
+  duration_s: 6.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

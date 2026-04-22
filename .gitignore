@@ -1,5 +1,7 @@
 # Simulator outputs — see DESIGN_V0.md §9.6.
-runs/
+# Anchored to repo root: `docs/runs/` is the committed Pages-ready artifact
+# bundle produced by scripts/build_pages.py and must stay tracked.
+/runs/
 
 # Python
 __pycache__/

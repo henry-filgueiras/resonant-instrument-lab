@@ -98,6 +98,8 @@ for name in "${FIXTURES[@]}"; do
     printf '  %s?summaryA=../runs/demo/%s/summary.json\n' "$BASE" "$name"
 done
 
+printf '\nPages bundle: to refresh the committed GitHub Pages tree under docs/,\n'
+printf '  run `python scripts/build_pages.py` (or `--skip-sim` to only re-copy).\n'
 printf '\nCtrl-C to stop the server.\n\n'
 
 exec "$VENV_PY" -m http.server --bind 127.0.0.1 "$PORT"

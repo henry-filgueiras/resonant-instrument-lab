@@ -1,0 +1,1190 @@
+// Static regime-oracle viewer, A/B comparison mode. Loads up to two
+// summary.json files (file picker, paste box, or ?summaryA=URL / ?summaryB=URL
+// query params — fetch only works when served, not file://) and renders each
+// plus a detector-flip / stat-delta comparison card. Each slot also renders a
+// small topology/body view from a sibling topology.json when available (fetched
+// next to the summary URL, or loaded via the per-slot "+ topology.json" picker
+// under file://). No framework, no build.
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+
+const fmtFloat = (x, digits = 3) =>
+  typeof x === "number" && Number.isFinite(x) ? x.toFixed(digits) : "—";
+
+const fmtSeconds = (x, digits = 2) =>
+  typeof x === "number" && Number.isFinite(x) ? `${x.toFixed(digits)} s` : "—";
+
+const fmtSep = (x, digits = 2) =>
+  x == null ? "inf" : fmtFloat(x, digits);
+
+const signed = (d, digits = 3) =>
+  `${d >= 0 ? "+" : ""}${d.toFixed(digits)}`;
+
+function kvRow(k, v) {
+  const row = el("div", "row");
+  row.append(el("span", "k", k), el("span", "v mono", v));
+  return row;
+}
+
+// --- per-slot state ---
+const state = { A: null, B: null };
+const topos = { A: null, B: null };
+const audioSources = { A: null, B: null }; // resolved absolute audio URLs
+
+function getSlotEls(slotEl) {
+  const q = (role) => slotEl.querySelector(`[data-role="${role}"]`);
+  return {
+    root: slotEl,
+    file: q("file"),
+    topoFile: q("topo-file"),
+    pasteToggle: q("paste-toggle"),
+    pastePanel: q("paste-panel"),
+    pasteArea: q("paste-area"),
+    pasteApply: q("paste-apply"),
+    status: q("status"),
+    empty: q("empty"),
+    summary: q("summary"),
+    metaName: q("meta-name"),
+    metaDuration: q("meta-duration"),
+    metaN: q("meta-n"),
+    metaRate: q("meta-rate"),
+    metaSchema: q("meta-schema"),
+    metaPath: q("meta-path"),
+    topoCard: q("topology-card"),
+    topoStage: q("topology-stage"),
+    topoFooter: q("topology-footer"),
+    dynamicsCard: q("dynamics-card"),
+    rStage: q("r-stage"),
+    rasterStage: q("raster-stage"),
+    dynamicsFooter: q("dynamics-footer"),
+    detectors: q("detectors"),
+    stats: q("stats"),
+    rawJson: q("raw-json"),
+  };
+}
+
+function setStatus(els, msg, kind) {
+  els.status.textContent = msg || "";
+  if (kind) els.status.dataset.kind = kind;
+  else delete els.status.dataset.kind;
+}
+
+// --- topology ---
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => {
+  const n = document.createElementNS(SVG_NS, tag);
+  if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+
+function inferTopologyUrl(summaryUrl) {
+  if (typeof summaryUrl !== "string") return null;
+  // Strip query/fragment, then replace the trailing "summary.json" basename.
+  const [path] = summaryUrl.split(/[?#]/, 1);
+  const m = path.match(/^(.*\/)?summary\.json$/);
+  if (!m) return null;
+  return (m[1] ?? "") + "topology.json";
+}
+
+// Map omega (in the topology's min..max range) to a subtle accent ramp.
+// Green → teal → blue: lets two_cluster's frequency split read at a glance
+// without turning into a rainbow. Single-frequency worlds get flat accent.
+function nodeFill(t) {
+  // t in [0, 1]; clamp for safety.
+  const u = Math.max(0, Math.min(1, t));
+  // HSL 160 (green) → 210 (blue), consistent lightness.
+  const hue = 160 + u * 50;
+  return `hsl(${hue.toFixed(1)}, 55%, 58%)`;
+}
+
+// Collect bridge-node indices from a loaded summary, when the
+// `unstable_bridge` counterfactual detector fired. Silent / absent
+// returns an empty Set — topology renders normally with no highlight.
+function bridgeNodeSet(summary) {
+  const ub = summary && summary.detectors && summary.detectors.unstable_bridge;
+  if (!ub || !ub.fired) return new Set();
+  const list = Array.isArray(ub.bridge_nodes) ? ub.bridge_nodes : [];
+  return new Set(list.filter(Number.isInteger));
+}
+
+// Sibling of `bridgeNodeSet` for the `brittle_lock` counterfactual
+// detector. Same graceful-fallback contract: silent / missing field /
+// old summary → empty Set, topology renders with no highlight.
+function brittleNodeSet(summary) {
+  const bl = summary && summary.detectors && summary.detectors.brittle_lock;
+  if (!bl || !bl.fired) return new Set();
+  const list = Array.isArray(bl.brittle_nodes) ? bl.brittle_nodes : [];
+  return new Set(list.filter(Number.isInteger));
+}
+
+// Node index of the currently-selected atlas intervention, or null.
+// Atlas mode only: the selection lives on `atlasState`, and only slot B
+// receives the intervention's embedded summary. Outside atlas mode (or
+// before any selection) this returns null, so the highlight is absent
+// and the topology render path is unchanged for legacy A/B URLs.
+function selectedInterventionNode(slotKey) {
+  if (slotKey !== "B") return null;
+  const data = atlasState && atlasState.data;
+  const id = atlasState && atlasState.selectedId;
+  if (!data || !id) return null;
+  const iv = (data.interventions || []).find((e) => e.id === id);
+  if (!iv || !Number.isInteger(iv.node)) return null;
+  return iv.node;
+}
+
+function renderTopology(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const topo = topos[slotKey];
+
+  els.topoStage.innerHTML = "";
+  els.topoFooter.innerHTML = "";
+
+  if (!topo || !Array.isArray(topo.nodes) || topo.nodes.length === 0) {
+    els.topoCard.dataset.state = "missing";
+    els.topoStage.append(el("p", "topology-missing", "topology unavailable"));
+    return;
+  }
+  els.topoCard.dataset.state = "ok";
+  const bridgeNodes = bridgeNodeSet(state[slotKey]);
+  const brittleNodes = brittleNodeSet(state[slotKey]);
+
+  // Geometry: 100×100 viewBox with an inner padded area so dots near the
+  // edges don't clip and index labels have room.
+  const VB = 100, PAD = 8;
+  const inner = VB - 2 * PAD;
+  const sx = (x) => PAD + x * inner;
+  const sy = (y) => PAD + (1 - y) * inner; // flip: config y=0 is bottom
+
+  const root = svg("svg", { viewBox: `0 0 ${VB} ${VB}`, role: "img" });
+  root.setAttribute("aria-label", `topology: ${topo.nodes.length} nodes`);
+
+  // Frame + faint centerlines.
+  root.append(svg("rect", {
+    class: "topo-frame",
+    x: PAD, y: PAD, width: inner, height: inner, rx: 1,
+  }));
+  root.append(svg("line", {
+    class: "topo-grid",
+    x1: PAD + inner / 2, y1: PAD,
+    x2: PAD + inner / 2, y2: PAD + inner,
+  }));
+  root.append(svg("line", {
+    class: "topo-grid",
+    x1: PAD,          y1: PAD + inner / 2,
+    x2: PAD + inner,  y2: PAD + inner / 2,
+  }));
+
+  // Frequency range for subtle per-node tinting.
+  const omegas = topo.nodes
+    .map((n) => n.omega_0_hz)
+    .filter((v) => typeof v === "number" && Number.isFinite(v));
+  const wMin = omegas.length ? Math.min(...omegas) : 0;
+  const wMax = omegas.length ? Math.max(...omegas) : 1;
+  const wSpan = wMax - wMin > 1e-9 ? wMax - wMin : 1;
+
+  const bridgesRendered = [];
+  const brittlesRendered = [];
+  const selectedNode = selectedInterventionNode(slotKey);
+  let selectedRendered = null;
+  for (const node of topo.nodes) {
+    const p = node && node.pos;
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const cx = sx(+p[0]);
+    const cy = sy(+p[1]);
+    const t = typeof node.omega_0_hz === "number"
+      ? (node.omega_0_hz - wMin) / wSpan : 0.5;
+    const idx = Number.isInteger(node.index) ? node.index : null;
+    const isBridge = idx != null && bridgeNodes.has(idx);
+    const isBrittle = idx != null && brittleNodes.has(idx);
+    const isSelected = idx != null && idx === selectedNode;
+    // Rings behind the node dot — painted first so the dot / label
+    // always sit on top of the accent. Bridge (r=5.0), brittle (r=5.8),
+    // and atlas-selected (r=7.0) use concentric radii so all three read
+    // cleanly when a single node carries more than one highlight; the
+    // selected ring is solid while the detector rings are dashed, so
+    // the vocabulary stays legible even on monochrome capture.
+    if (isBridge) {
+      root.append(svg("circle", {
+        class: "topo-bridge-ring",
+        cx, cy, r: 5.0,
+      }));
+      bridgesRendered.push(idx);
+    }
+    if (isBrittle) {
+      root.append(svg("circle", {
+        class: "topo-brittle-ring",
+        cx, cy, r: 5.8,
+      }));
+      brittlesRendered.push(idx);
+    }
+    if (isSelected) {
+      root.append(svg("circle", {
+        class: "topo-selected-ring",
+        cx, cy, r: 7.0,
+      }));
+      selectedRendered = idx;
+    }
+    root.append(svg("circle", {
+      class: "topo-node",
+      cx, cy, r: 2.6,
+      fill: nodeFill(t),
+    }));
+    const lbl = svg("text", {
+      class: "topo-label",
+      x: cx,
+      y: cy - 4.2,
+    });
+    lbl.textContent = idx == null ? "" : String(idx);
+    root.append(lbl);
+  }
+
+  els.topoStage.append(root);
+
+  // Footer: N • K0 • sigma • eta, plus an explicit bridge-node note
+  // when `unstable_bridge` fired — so the highlight reads without
+  // requiring a hover or a scroll to the detector card.
+  const fmt = (x, d = 2) =>
+    typeof x === "number" && Number.isFinite(x) ? x.toFixed(d) : "—";
+  const coup = topo.coupling || {};
+  const noise = topo.noise || {};
+  const parts = [
+    ["N", String(topo.N ?? topo.nodes.length)],
+    ["K₀", fmt(coup.K0, 2)],
+    ["σ", fmt(coup.sigma, 2)],
+    ["η", fmt(noise.eta, 2)],
+  ];
+  for (const [k, v] of parts) {
+    const span = el("span", null);
+    span.append(el("span", "k", k), el("span", "v", v));
+    els.topoFooter.append(span);
+  }
+  if (bridgesRendered.length > 0) {
+    const label = bridgesRendered.length === 1 ? "bridge node" : "bridge nodes";
+    const note = el("span", "topo-bridge-note");
+    note.append(el("span", "k", label));
+    note.append(el("span", "v", bridgesRendered.join(" · ")));
+    els.topoFooter.append(note);
+  }
+  if (brittlesRendered.length > 0) {
+    const label = brittlesRendered.length === 1 ? "brittle node" : "brittle nodes";
+    const note = el("span", "topo-brittle-note");
+    note.append(el("span", "k", label));
+    note.append(el("span", "v", brittlesRendered.join(" · ")));
+    els.topoFooter.append(note);
+  }
+  if (selectedRendered != null) {
+    const note = el("span", "topo-selected-note");
+    note.append(el("span", "k", "selected intervention node"));
+    note.append(el("span", "v", String(selectedRendered)));
+    els.topoFooter.append(note);
+  }
+}
+
+// --- dynamics (r(t) sparkline + pulse raster) ---
+
+// Mark-up scaffolding: every firing window in `windows_s` becomes a
+// translucent accent band behind the sparkline / raster, so the reader
+// sees at a glance *when* the named regime held.
+function firingWindowBands(summary, durationS, viewW) {
+  if (!summary || !durationS || durationS <= 0) return [];
+  const dets = summary.detectors || {};
+  const bands = [];
+  for (const name of Object.keys(dets)) {
+    const d = dets[name];
+    if (!d || !d.fired || !Array.isArray(d.windows_s)) continue;
+    for (const w of d.windows_s) {
+      if (!Array.isArray(w) || w.length < 2) continue;
+      const [s, e] = w;
+      if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+      const x0 = Math.max(0, (s / durationS) * viewW);
+      const x1 = Math.min(viewW, (e / durationS) * viewW);
+      if (x1 > x0) bands.push({ x: x0, w: x1 - x0, name });
+    }
+  }
+  return bands;
+}
+
+function renderRSeries(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.rStage.innerHTML = "";
+  if (!summary) return;
+  const rs = summary.stats && summary.stats.r_series;
+  const values = rs && Array.isArray(rs.values) ? rs.values : null;
+  const fps = rs && typeof rs.fps === "number" && rs.fps > 0 ? rs.fps : null;
+  if (!values || values.length < 2 || !fps) {
+    els.rStage.append(el("p", "dynamics-missing", "r(t) unavailable"));
+    return;
+  }
+  const duration = (values.length - 1) / fps;
+  // Viewbox: 240×40 is the design aspect; stretched to the stage width.
+  const VB_W = 240, VB_H = 40, PAD_L = 2, PAD_R = 2, PAD_T = 3, PAD_B = 3;
+  const innerW = VB_W - PAD_L - PAD_R;
+  const innerH = VB_H - PAD_T - PAD_B;
+  const root = svg("svg", {
+    viewBox: `0 0 ${VB_W} ${VB_H}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+  root.setAttribute("aria-label", `r(t) over ${duration.toFixed(2)} s`);
+
+  // Firing-window bands — translucent vertical accents.
+  for (const b of firingWindowBands(summary, duration, innerW)) {
+    root.append(svg("rect", {
+      class: "dyn-band",
+      x: PAD_L + b.x,
+      y: PAD_T,
+      width: b.w,
+      height: innerH,
+    }));
+  }
+
+  // Reference line at r = 0.9 (the phase_locked threshold).
+  const yLock = PAD_T + innerH * (1 - 0.9);
+  root.append(svg("line", {
+    class: "dyn-ref",
+    x1: PAD_L, x2: PAD_L + innerW,
+    y1: yLock, y2: yLock,
+  }));
+
+  // Polyline through the (sampled) r(t).
+  const n = values.length;
+  const pts = values.map((v, i) => {
+    const x = PAD_L + (i / (n - 1)) * innerW;
+    const clamped = Math.max(0, Math.min(1, v));
+    const y = PAD_T + (1 - clamped) * innerH;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  root.append(svg("polyline", { class: "dyn-line", points: pts }));
+
+  els.rStage.append(root);
+}
+
+function renderPulseRaster(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.rasterStage.innerHTML = "";
+  if (!summary) return;
+  const raster = summary.stats && summary.stats.pulse_raster;
+  if (!Array.isArray(raster) || raster.length === 0) {
+    els.rasterStage.append(el("p", "dynamics-missing", "pulse raster unavailable"));
+    return;
+  }
+  const durationS = (summary.meta && summary.meta.duration_s) || null;
+  if (!durationS || durationS <= 0) {
+    els.rasterStage.append(el("p", "dynamics-missing", "pulse raster unavailable"));
+    return;
+  }
+
+  const N = raster.length;
+  const ROW_H = 4.5;   // SVG units per node row
+  const VB_W = 240;
+  const VB_H = N * ROW_H;
+  const PAD_L = 2, PAD_R = 2;
+  const innerW = VB_W - PAD_L - PAD_R;
+
+  const root = svg("svg", {
+    viewBox: `0 0 ${VB_W} ${VB_H}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+  root.setAttribute("aria-label", `pulse raster, ${N} nodes over ${durationS.toFixed(2)} s`);
+
+  // Firing-window bands, same as the r(t) sparkline.
+  for (const b of firingWindowBands(summary, durationS, innerW)) {
+    root.append(svg("rect", {
+      class: "dyn-band",
+      x: PAD_L + b.x,
+      y: 0,
+      width: b.w,
+      height: VB_H,
+    }));
+  }
+
+  // Per-node row separators (subtle) and pulse ticks.
+  for (let i = 0; i < N; i++) {
+    const yMid = (i + 0.5) * ROW_H;
+    // faint baseline so empty rows still read as rows
+    root.append(svg("line", {
+      class: "dyn-row-base",
+      x1: PAD_L, x2: PAD_L + innerW,
+      y1: yMid, y2: yMid,
+    }));
+    const pulses = raster[i];
+    if (!Array.isArray(pulses)) continue;
+    for (const t of pulses) {
+      if (!Number.isFinite(t)) continue;
+      if (t < 0 || t > durationS) continue;
+      const x = PAD_L + (t / durationS) * innerW;
+      root.append(svg("line", {
+        class: "dyn-tick",
+        x1: x, x2: x,
+        y1: yMid - ROW_H * 0.38,
+        y2: yMid + ROW_H * 0.38,
+      }));
+    }
+  }
+
+  els.rasterStage.append(root);
+}
+
+function renderDynamicsFooter(slotKey) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (!slotEl) return;
+  const els = getSlotEls(slotEl);
+  const summary = state[slotKey];
+  els.dynamicsFooter.innerHTML = "";
+  if (!summary) return;
+  const meta = summary.meta || {};
+  const raster = summary.stats && Array.isArray(summary.stats.pulse_raster)
+    ? summary.stats.pulse_raster : [];
+  const totalPulses = raster.reduce(
+    (acc, p) => acc + (Array.isArray(p) ? p.length : 0), 0
+  );
+  const parts = [
+    ["window", typeof meta.duration_s === "number" ? `${meta.duration_s.toFixed(2)} s` : "—"],
+    ["lock line", "r = 0.9"],
+    ["pulses", String(totalPulses)],
+  ];
+  for (const [k, v] of parts) {
+    const span = el("span", null);
+    span.append(el("span", "k", k), el("span", "v", v));
+    els.dynamicsFooter.append(span);
+  }
+}
+
+function renderDynamics(slotKey) {
+  renderRSeries(slotKey);
+  renderPulseRaster(slotKey);
+  renderDynamicsFooter(slotKey);
+}
+
+function topologiesMatch(a, b) {
+  if (!a || !b || !Array.isArray(a.nodes) || !Array.isArray(b.nodes)) return null;
+  if (a.nodes.length !== b.nodes.length) return false;
+  const EPS = 1e-3;
+  // Compare by index where possible; otherwise by order.
+  const byIdx = (arr) => {
+    const m = new Map();
+    for (const n of arr) if (Number.isInteger(n?.index)) m.set(n.index, n);
+    return m.size === arr.length ? m : null;
+  };
+  const ma = byIdx(a.nodes), mb = byIdx(b.nodes);
+  const pairs = ma && mb
+    ? [...ma.keys()].map((k) => [ma.get(k), mb.get(k)])
+    : a.nodes.map((n, i) => [n, b.nodes[i]]);
+  for (const [na, nb] of pairs) {
+    if (!na || !nb) return false;
+    const pa = na.pos, pb = nb.pos;
+    if (!Array.isArray(pa) || !Array.isArray(pb)) return false;
+    if (Math.abs(pa[0] - pb[0]) > EPS) return false;
+    if (Math.abs(pa[1] - pb[1]) > EPS) return false;
+  }
+  return true;
+}
+
+function renderTopoBadge() {
+  const badge = document.getElementById("topo-badge");
+  if (!badge) return;
+  const a = topos.A, b = topos.B;
+  if (!a || !b) { badge.hidden = true; return; }
+  const match = topologiesMatch(a, b);
+  if (match === null) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.dataset.same = match ? "true" : "false";
+  badge.textContent = match ? "same topology" : "different topology";
+}
+
+function setTopology(slotKey, topo) {
+  topos[slotKey] = topo && typeof topo === "object" ? topo : null;
+  // If the summary card isn't visible yet, renderSummary will call us later.
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  if (slotEl && !slotEl.querySelector('[data-role="summary"]').hidden) {
+    renderTopology(slotKey);
+  }
+  renderTopoBadge();
+}
+
+function renderDetectorCard(name, d) {
+  const card = el("div", "detector-card");
+  const fired = !!(d && d.fired);
+  card.dataset.state = fired ? "fired" : "silent";
+  card.append(el("div", "detector-name", name));
+  card.append(el("div", "detector-verdict", fired ? "FIRED" : "silent"));
+  const rows = el("div", "detector-rows");
+  if (d) {
+    rows.append(kvRow("confidence", fmtFloat(d.confidence, 3)));
+    rows.append(kvRow("longest window", fmtSeconds(d.longest_window_s, 2)));
+    if (Array.isArray(d.windows_s) && d.windows_s.length > 0) {
+      const ws = d.windows_s
+        .map(([s, e]) =>
+          Number.isFinite(s) && Number.isFinite(e)
+            ? `[${s.toFixed(2)}, ${e.toFixed(2)})`
+            : "—"
+        )
+        .join("  ");
+      rows.append(kvRow("windows", ws));
+    }
+  }
+  card.append(rows);
+  return card;
+}
+
+function renderSummary(slotKey, summary, sourceLabel) {
+  const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
+  const els = getSlotEls(slotEl);
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    setStatus(els, "not a JSON object", "err");
+    return;
+  }
+  state[slotKey] = summary;
+
+  const ver = summary.schema_version;
+  if (ver === 1) setStatus(els, `loaded: ${sourceLabel ?? ""}`.trim(), "ok");
+  else setStatus(els, `schema_version=${ver ?? "?"} — best-effort`, "warn");
+
+  const meta = summary.meta || {};
+  els.metaName.textContent = meta.config_name || "(unnamed config)";
+  els.metaDuration.textContent =
+    typeof meta.duration_s === "number" ? `${meta.duration_s.toFixed(2)} s` : "—";
+  els.metaN.textContent = meta.N ?? "—";
+  els.metaRate.textContent =
+    typeof meta.control_rate_hz === "number" ? `${meta.control_rate_hz} Hz` : "—";
+  els.metaSchema.textContent = `v${ver ?? "?"}`;
+  els.metaPath.textContent = meta.config_path || "";
+
+  els.detectors.innerHTML = "";
+  const detectors = summary.detectors || {};
+  const names = Object.keys(detectors)
+    .filter((k) => detectors[k] && typeof detectors[k] === "object")
+    .sort();
+  if (names.length === 0) {
+    els.detectors.append(el("p", "empty-note", "(no detectors reported)"));
+  } else {
+    // Fired detectors render inline; silent ones collapse into a
+    // disclosure so the slot's default height is driven by what
+    // actually fired, not by detector count. No information is
+    // removed — the silent names appear in the disclosure summary,
+    // and expanding shows the full per-detector card.
+    const firedNames = names.filter((n) => detectors[n].fired);
+    const silentNames = names.filter((n) => !detectors[n].fired);
+    for (const n of firedNames) {
+      els.detectors.append(renderDetectorCard(n, detectors[n]));
+    }
+    if (silentNames.length > 0) {
+      const details = el("details", "silent-group");
+      const caption = el("summary", "silent-group-summary");
+      const label = silentNames.length === 1 ? "silent detector" : "silent detectors";
+      caption.append(el("span", "silent-count mono", String(silentNames.length)));
+      caption.append(el("span", "silent-label", ` ${label} — `));
+      caption.append(el("span", "silent-names mono", silentNames.join(" · ")));
+      details.append(caption);
+      const inner = el("div", "silent-group-cards");
+      for (const n of silentNames) {
+        inner.append(renderDetectorCard(n, detectors[n]));
+      }
+      details.append(inner);
+      els.detectors.append(details);
+    }
+  }
+
+  els.stats.innerHTML = "";
+  const s = summary.stats || {};
+  if ("mean_r" in s) els.stats.append(kvRow("mean r(t)", fmtFloat(s.mean_r)));
+  if ("tail_1s_mean_r" in s) els.stats.append(kvRow("tail 1s r", fmtFloat(s.tail_1s_mean_r)));
+  if ("tail_2way_velocity_separability" in s) {
+    els.stats.append(kvRow("tail 2-way velocity sep.", fmtSep(s.tail_2way_velocity_separability)));
+  }
+
+  els.rawJson.textContent = JSON.stringify(summary, null, 2);
+  els.empty.hidden = true;
+  els.summary.hidden = false;
+
+  renderTopology(slotKey);
+  renderDynamics(slotKey);
+
+  document.getElementById("empty-both").hidden = true;
+  renderComparison();
+  renderTopoBadge();
+}
+
+// --- comparison ---
+
+// Human-readable sentence for a single detector state flip.
+const FLIP_SENTENCE = {
+  phase_locked:     { up: "Global lock emerged.",      down: "Lock collapsed." },
+  drifting:         { up: "Drift appeared.",           down: "Drift disappeared." },
+  phase_beating:    { up: "Phase beating appeared.",   down: "Phase beating faded." },
+  flam:             { up: "A flam formed.",            down: "The flam dissolved." },
+  polyrhythmic:     { up: "A polyrhythm locked in.",   down: "The polyrhythm dissolved." },
+  dominant_cluster: { up: "A dominant cluster formed.", down: "The cluster dissolved." },
+  unstable_bridge:  { up: "A load-bearing bridge was detected.", down: "The bridge is no longer load-bearing." },
+  brittle_lock:     { up: "The lock turned brittle — a small nudge breaks it.", down: "The lock hardened against small nudges." },
+};
+
+function takeawayForFlip({ name, to }) {
+  const dir = to ? "up" : "down";
+  const map = FLIP_SENTENCE[name];
+  if (map) return map[dir];
+  return `${name}: ${to ? "silent → FIRED" : "FIRED → silent"}.`;
+}
+
+function joinSentences(parts) {
+  if (parts.length <= 1) return parts[0] ?? "";
+  // lowercase the leading char of each continuation, drop its trailing "."
+  const head = parts[0].replace(/\.$/, "");
+  const tail = parts.slice(1).map((p) => {
+    const t = p.replace(/\.$/, "");
+    return t.charAt(0).toLowerCase() + t.slice(1);
+  });
+  return `${head}; ${tail.join("; ")}.`;
+}
+
+function buildTakeaway(flips, sA, sB) {
+  if (flips.length > 0) return joinSentences(flips.map(takeawayForFlip));
+  // no detector flip — fall back to the most legible stat delta
+  const rA = sA?.tail_1s_mean_r, rB = sB?.tail_1s_mean_r;
+  if (typeof rA === "number" && typeof rB === "number") {
+    const dr = rB - rA;
+    if (Math.abs(dr) >= 0.1) {
+      return `Tail coherence ${dr > 0 ? "rose" : "fell"} ${Math.abs(dr).toFixed(2)}.`;
+    }
+  }
+  const sepA = sA?.tail_2way_velocity_separability;
+  const sepB = sB?.tail_2way_velocity_separability;
+  if (typeof sepA === "number" && typeof sepB === "number" && Math.abs(sepB - sepA) >= 10) {
+    return `2-way velocity separability ${sepB > sepA ? "grew" : "shrank"} sharply.`;
+  }
+  return "No detector flips; stats largely unchanged.";
+}
+
+function diffRow(label, change, dir) {
+  const li = el("li", "diff-row");
+  li.dataset.dir = dir;
+  li.append(el("span", "diff-label mono", label));
+  li.append(el("span", "diff-change mono", change));
+  return li;
+}
+
+function firedLabel(d) {
+  if (!d) return "absent";
+  return d.fired ? "FIRED" : "silent";
+}
+
+function renderComparison() {
+  const { A, B } = state;
+  const container = document.getElementById("comparison");
+  const list = document.getElementById("diff-list");
+  const takeaway = document.getElementById("takeaway");
+  if (!A || !B) {
+    container.hidden = true;
+    return;
+  }
+
+  const bullets = [];
+  const flips = [];
+
+  // -- detector flips / confidence changes --
+  const detA = A.detectors || {};
+  const detB = B.detectors || {};
+  const detNames = Array.from(new Set([...Object.keys(detA), ...Object.keys(detB)]))
+    .filter((n) => (detA[n] && typeof detA[n] === "object") || (detB[n] && typeof detB[n] === "object"))
+    .sort();
+  for (const n of detNames) {
+    const a = detA[n], b = detB[n];
+    const aFired = !!(a && a.fired);
+    const bFired = !!(b && b.fired);
+    if (!a || !b) {
+      bullets.push(diffRow(n, `${firedLabel(a)} → ${firedLabel(b)}`, b ? "up" : "down"));
+      if (a && !b) flips.push({ name: n, from: aFired, to: false });
+      if (!a && b) flips.push({ name: n, from: false, to: bFired });
+      continue;
+    }
+    if (aFired !== bFired) {
+      bullets.push(diffRow(n, `${firedLabel(a)} → ${firedLabel(b)}`, bFired ? "up" : "down"));
+      flips.push({ name: n, from: aFired, to: bFired });
+    } else if (aFired && bFired) {
+      const aConf = a.confidence, bConf = b.confidence;
+      if (typeof aConf === "number" && typeof bConf === "number" && Math.abs(bConf - aConf) >= 0.001) {
+        bullets.push(diffRow(
+          n,
+          `conf ${fmtFloat(aConf)} → ${fmtFloat(bConf)} (${signed(bConf - aConf)})`,
+          "flat"
+        ));
+      }
+    }
+  }
+
+  // -- stat deltas --
+  const STAT_KEYS = [
+    ["mean_r", "mean r(t)", 3, 0.001],
+    ["tail_1s_mean_r", "tail 1s r", 3, 0.001],
+    ["tail_2way_velocity_separability", "tail 2-way sep.", 2, 0.01],
+  ];
+  const sA = A.stats || {}, sB = B.stats || {};
+  for (const [k, label, digits, tol] of STAT_KEYS) {
+    const hasA = k in sA, hasB = k in sB;
+    if (!hasA && !hasB) continue;
+    const va = sA[k], vb = sB[k];
+    // null on separability means "inf" — treat as not-a-number for delta
+    const vaNum = typeof va === "number" && Number.isFinite(va);
+    const vbNum = typeof vb === "number" && Number.isFinite(vb);
+    if (!vaNum || !vbNum) {
+      const show = (present, x) => !present ? "—" : (x == null ? "inf" : fmtFloat(x, digits));
+      if (show(hasA, va) !== show(hasB, vb)) {
+        bullets.push(diffRow(label, `${show(hasA, va)} → ${show(hasB, vb)}`, "flat"));
+      }
+      continue;
+    }
+    const d = vb - va;
+    if (Math.abs(d) < tol) continue;
+    bullets.push(diffRow(
+      label,
+      `${fmtFloat(va, digits)} → ${fmtFloat(vb, digits)} (${signed(d, digits)})`,
+      d > 0 ? "up" : "down"
+    ));
+  }
+
+  list.innerHTML = "";
+  if (bullets.length === 0) {
+    list.append(el("li", "diff-none", "(no changes)"));
+  } else {
+    for (const b of bullets) list.append(b);
+  }
+  takeaway.textContent = buildTakeaway(flips, sA, sB);
+  container.hidden = false;
+}
+
+// --- loaders ---
+
+function wireSlot(slotEl) {
+  const slotKey = slotEl.dataset.slot;
+  const els = getSlotEls(slotEl);
+  els.file.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      renderSummary(slotKey, JSON.parse(text), file.name);
+      // File-picker load: no way to infer a sibling audio.wav under
+      // file://, so the slot simply has no audible source. The control
+      // strip disables the corresponding play button.
+      setAudioSource(slotKey, null);
+    } catch (err) {
+      setStatus(els, `load failed: ${err.message}`, "err");
+    }
+  });
+  if (els.topoFile) {
+    els.topoFile.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        setTopology(slotKey, JSON.parse(await file.text()));
+      } catch (err) {
+        setStatus(els, `topology load failed: ${err.message}`, "err");
+      }
+    });
+  }
+  els.pasteToggle.addEventListener("click", () => {
+    els.pastePanel.hidden = !els.pastePanel.hidden;
+    if (!els.pastePanel.hidden) els.pasteArea.focus();
+  });
+  els.pasteApply.addEventListener("click", () => {
+    try {
+      renderSummary(slotKey, JSON.parse(els.pasteArea.value), "pasted");
+    } catch (err) {
+      setStatus(els, `parse failed: ${err.message}`, "err");
+    }
+  });
+}
+
+for (const slotEl of document.querySelectorAll(".slot")) wireSlot(slotEl);
+
+// --- Intervention Atlas ---
+// `?atlas=PATH` mode: fetch atlas.json, load baseline summary+topology
+// into slot A, render a ranked intervention list above the comparison
+// card, and let clicks load each intervention's embedded summary into
+// slot B for A/B comparison. Reuses every existing render path —
+// renderSummary, renderTopology, renderComparison — so the atlas view
+// is a chooser on top of the A/B viewer, not a parallel renderer.
+
+const atlasState = {
+  data: null,            // parsed atlas.json
+  selectedId: null,      // currently selected intervention id (or null)
+  baseUrl: null,         // absolute URL of atlas.json, for resolving
+                         // audio_path / topology_path relative links
+};
+
+function inferAtlasUrl(_) { return null; } // (no auto-discovery yet)
+
+function _bucketForScore(score, maxScore) {
+  // Visual band, not a hard threshold. Helpful for at-a-glance scanning
+  // the ranked list — flips dominate, so the top group is "strong".
+  if (score >= 1.0) return "strong";    // at least one detector flip
+  if (score >= 0.1) return "medium";    // visible stat shift
+  return "weak";
+}
+
+function renderAtlasList() {
+  const root = document.getElementById("atlas-list");
+  if (!root) return;
+  const data = atlasState.data;
+  root.innerHTML = "";
+  if (!data || !Array.isArray(data.interventions)) return;
+  const interventions = data.interventions;
+  const maxScore = interventions.reduce(
+    (m, iv) => Math.max(m, +iv.score || 0), 0
+  );
+  interventions.forEach((iv, i) => {
+    const li = el("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "atlas-iv";
+    btn.dataset.id = iv.id;
+    btn.dataset.bucket = _bucketForScore(+iv.score || 0, maxScore);
+    if (iv.id === atlasState.selectedId) btn.dataset.selected = "true";
+
+    const rank = el("span", "atlas-rank mono", `#${i + 1}`);
+
+    const body = el("div", "atlas-body");
+    body.append(el("span", "atlas-label mono", iv.label || iv.id));
+    const explanation = el("span", "atlas-explanation",
+      iv.score_explanation || "(no explanation)");
+    body.append(explanation);
+    const flips = (iv.deltas && Array.isArray(iv.deltas.flips))
+      ? iv.deltas.flips : [];
+    if (flips.length > 0) {
+      const pillRow = el("div", "atlas-flips");
+      for (const f of flips) {
+        const dir = f.to ? "up" : "down";
+        const arrow = f.to ? "→ FIRED" : "→ silent";
+        const pill = el("span", "atlas-flip-pill mono",
+          `${f.detector} ${arrow}`);
+        pill.dataset.dir = dir;
+        pillRow.append(pill);
+      }
+      body.append(pillRow);
+    }
+
+    const score = el("span", "atlas-score mono",
+      typeof iv.score === "number" ? iv.score.toFixed(2) : "—");
+    const sub = el("span", "atlas-score-sub", "score");
+    score.append(sub);
+
+    btn.append(rank, body, score);
+    btn.addEventListener("click", () => selectAtlasIntervention(iv.id));
+    li.append(btn);
+    root.append(li);
+  });
+}
+
+function selectAtlasIntervention(id) {
+  const data = atlasState.data;
+  if (!data) return;
+  const iv = (data.interventions || []).find((e) => e.id === id);
+  if (!iv) return;
+  atlasState.selectedId = id;
+  // Render intervention summary into slot B, reusing baseline topology
+  // (interventions don't reshape the scene topology — only ω or coupling
+  // changes — so the topology card on B is the same picture). Bridge /
+  // brittle highlights derive from the slot's own summary, so the silent
+  // counterfactual fields on the intervention summary correctly produce
+  // no rings.
+  renderSummary("B", iv.summary, iv.label);
+  if (topos.A) setTopology("B", topos.A);
+  // Wire slot B's audio to this intervention's persisted WAV, resolved
+  // relative to the atlas URL (which is `atlasState.baseUrl`). Absent
+  // `audio_path` => no B-side audio; the UI disables the play-B button.
+  if (iv.audio_path && atlasState.baseUrl) {
+    setAudioSource("B", new URL(iv.audio_path, atlasState.baseUrl).href);
+  } else {
+    setAudioSource("B", null);
+  }
+  renderAtlasList();  // refresh selected styling
+}
+
+async function loadAtlas(url, opts) {
+  const section = document.getElementById("atlas-mode");
+  const baselineNameEl = section.querySelector('[data-role="atlas-baseline-name"]');
+  const countEl = section.querySelector('[data-role="atlas-count"]');
+  const formulaEl = section.querySelector('[data-role="atlas-formula"]');
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (err) {
+    section.hidden = false;
+    baselineNameEl.textContent = `(atlas fetch failed: ${err.message})`;
+    return;
+  }
+  atlasState.data = data;
+  atlasState.selectedId = null;
+  atlasState.baseUrl = new URL(url, location.href).href;
+
+  const baseline = data.baseline || {};
+  baselineNameEl.textContent = baseline.config_name || "(unnamed baseline)";
+  const n = (data.interventions || []).length;
+  countEl.textContent = `${n} intervention${n === 1 ? "" : "s"}`;
+  const ranking = data.ranking || {};
+  formulaEl.textContent = ranking.score_formula
+    ? `score = ${ranking.score_formula}`
+    : "";
+  section.hidden = false;
+  renderAtlasList();
+
+  // Load baseline summary into slot A. Prefer the embedded
+  // observational summary (already filtered to match intervention
+  // detector shape — keeps the comparison flip count honest); fall
+  // back to fetching the sibling summary.json if missing.
+  if (baseline.observational_summary) {
+    renderSummary("A", baseline.observational_summary, baseline.config_name || "baseline");
+  } else if (baseline.summary_path) {
+    try {
+      const surl = new URL(baseline.summary_path, new URL(url, location.href)).href;
+      const r = await fetch(surl);
+      if (r.ok) renderSummary("A", await r.json(), baseline.config_name || "baseline");
+    } catch (_) { /* leave A empty */ }
+  }
+  // Best-effort topology fetch — sibling next to the atlas URL.
+  const topoPath = baseline.topology_path || "topology.json";
+  try {
+    const turl = new URL(topoPath, atlasState.baseUrl).href;
+    const tr = await fetch(turl);
+    if (tr.ok) setTopology("A", await tr.json());
+  } catch (_) { /* leave topology missing */ }
+
+  // Baseline audio: resolved relative to atlas.json. The browser's
+  // A-slot play button will be wired to this URL; fetch of the file
+  // itself is lazy (on first play) via HTMLAudioElement.
+  const baselineAudio = baseline.audio_path;
+  if (baselineAudio) {
+    setAudioSource("A", new URL(baselineAudio, atlasState.baseUrl).href);
+  } else {
+    setAudioSource("A", null);
+  }
+
+  // Optional ?select=ID URL hint — useful for headless screenshots and
+  // for sharing a deep link to a specific intervention. Falls back to
+  // unselected (the user clicks the list themselves) when the id is
+  // missing or doesn't match any intervention.
+  const want = opts && opts.selectId;
+  if (want && (data.interventions || []).some((iv) => iv.id === want)) {
+    selectAtlasIntervention(want);
+  }
+}
+
+// query params: ?summaryA=... & ?summaryB=...  (legacy: ?summary=... → slot A)
+// ?topologyA=... / ?topologyB=... override; otherwise infer a sibling
+// "topology.json" next to the summary URL and fetch it best-effort. Slots
+// load in parallel so each slot's summary+topology pair doesn't block the
+// other (matters for snappy first paint and for headless capture).
+// `?atlas=PATH` is the alternative entry point — see loadAtlas above.
+(function loadFromQuery() {
+  const qp = new URLSearchParams(location.search);
+  const atlasUrl = qp.get("atlas");
+  if (atlasUrl) {
+    loadAtlas(atlasUrl, { selectId: qp.get("select") });
+    return;
+  }
+  const pairs = [
+    ["A", qp.get("summaryA") || qp.get("summary"), qp.get("topologyA")],
+    ["B", qp.get("summaryB"),                      qp.get("topologyB")],
+  ];
+  Promise.all(pairs.map(async ([key, url, topoOverride]) => {
+    if (!url) return;
+    const slotEl = document.querySelector(`.slot[data-slot="${key}"]`);
+    const els = getSlotEls(slotEl);
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      renderSummary(key, await resp.json(), url);
+    } catch (err) {
+      setStatus(els, `fetch failed: ${err.message}`, "err");
+      return;
+    }
+    const topoUrl = topoOverride || inferTopologyUrl(url);
+    if (!topoUrl) return;
+    try {
+      const tr = await fetch(topoUrl);
+      if (!tr.ok) return; // missing sibling is fine — fail graceful
+      setTopology(key, await tr.json());
+    } catch (_) { /* network / parse: leave topology unavailable */ }
+    // Infer the sibling audio.wav for non-atlas A/B URLs. Same mechanism
+    // as the topology discovery; atlas mode sets audioSources directly
+    // from atlas.json's audio_path fields and bypasses this path.
+    const audioUrl = inferAudioUrl(url);
+    if (audioUrl) setAudioSource(key, audioUrl);
+  }));
+})();
+
+// --- audio A/B playback -----------------------------------------------------
+// Two parallel <audio> elements, one per slot. Both play from frame 0 with
+// one muted so `swap A ↔ B` is a zero-latency crossmute at preserved position
+// — the cheapest way to hear "what the intervention did" without any audio
+// graph / Web Audio scheduling. If only one source is loaded, that slot plays
+// solo and the swap button stays disabled. HTMLAudioElement is enough here;
+// we never touch decoded buffers or timing primitives beyond play/pause.
+
+const audioState = {
+  elA: null,           // HTMLAudioElement for slot A
+  elB: null,           // HTMLAudioElement for slot B
+  active: null,        // "A" | "B" | null — which slot is audible
+  isPlaying: false,    // true between play start and end/stop
+};
+
+function inferAudioUrl(summaryUrl) {
+  if (typeof summaryUrl !== "string") return null;
+  const [path] = summaryUrl.split(/[?#]/, 1);
+  const m = path.match(/^(.*\/)?summary\.json$/);
+  if (!m) return null;
+  return (m[1] ?? "") + "audio.wav";
+}
+
+function _audioEl(slot) {
+  if (slot === "A") return audioState.elA;
+  if (slot === "B") return audioState.elB;
+  return null;
+}
+
+function _setAudioEl(slot, el) {
+  if (slot === "A") audioState.elA = el;
+  if (slot === "B") audioState.elB = el;
+}
+
+function setAudioSource(slotKey, url) {
+  // Record the slot's audio source and (re)build the HTMLAudioElement.
+  // Stop any in-flight playback since the source changed out from under us;
+  // the user can re-click play A or play B as they choose.
+  audioSources[slotKey] = url || null;
+  const prev = _audioEl(slotKey);
+  if (prev) {
+    try { prev.pause(); } catch (_) { /* ignore */ }
+  }
+  if (!url) {
+    _setAudioEl(slotKey, null);
+    stopAudio();
+    renderAudioControls();
+    return;
+  }
+  const el = new Audio();
+  el.preload = "auto";
+  el.src = url;
+  el.addEventListener("ended", () => {
+    if (!audioState.isPlaying) return;
+    // Both elements end at (nearly) the same instant because they play
+    // aligned from 0. Stop cleanly on the first end so the UI reflects
+    // "done" and buttons reset.
+    stopAudio();
+  });
+  el.addEventListener("error", () => {
+    setAudioStatus(`audio load failed (${slotKey})`);
+  });
+  _setAudioEl(slotKey, el);
+  renderAudioControls();
+}
+
+function stopAudio() {
+  const { elA, elB } = audioState;
+  for (const el of [elA, elB]) {
+    if (!el) continue;
+    try { el.pause(); el.currentTime = 0; } catch (_) { /* ignore */ }
+    el.muted = false;
+  }
+  audioState.active = null;
+  audioState.isPlaying = false;
+  setAudioStatus("");
+  renderAudioControls();
+}
+
+async function playSlot(slotKey) {
+  // Play from 0 aligned across both slots so `swap` is position-preserving.
+  // If only one slot has audio we just play that one solo.
+  const target = _audioEl(slotKey);
+  const other = _audioEl(slotKey === "A" ? "B" : "A");
+  if (!target) return;
+  try {
+    target.currentTime = 0;
+    target.muted = false;
+    if (other) {
+      try { other.currentTime = 0; } catch (_) { /* ignore */ }
+      other.muted = true;
+    }
+    const plays = [target.play()];
+    if (other) plays.push(other.play().catch(() => {}));
+    await Promise.all(plays);
+    audioState.active = slotKey;
+    audioState.isPlaying = true;
+    setAudioStatus(other
+      ? `playing ${slotKey} — swap to hear the other`
+      : `playing ${slotKey} — solo`);
+  } catch (err) {
+    setAudioStatus(`play failed: ${err.message}`);
+  }
+  renderAudioControls();
+}
+
+function swapAudio() {
+  const { elA, elB, active, isPlaying } = audioState;
+  if (!isPlaying || !elA || !elB || !active) return;
+  const next = active === "A" ? "B" : "A";
+  const elNext = _audioEl(next);
+  const elPrev = _audioEl(active);
+  if (!elNext || !elPrev) return;
+  elNext.muted = false;
+  elPrev.muted = true;
+  audioState.active = next;
+  setAudioStatus(`playing ${next} — swap to hear the other`);
+  renderAudioControls();
+}
+
+function setAudioStatus(msg) {
+  const el = document.querySelector('[data-role="audio-status"]');
+  if (el) el.textContent = msg || "";
+}
+
+function renderAudioControls() {
+  const section = document.getElementById("audio-controls");
+  if (!section) return;
+  const btnA = section.querySelector('[data-role="audio-play-a"]');
+  const btnB = section.querySelector('[data-role="audio-play-b"]');
+  const btnSwap = section.querySelector('[data-role="audio-swap"]');
+  const btnStop = section.querySelector('[data-role="audio-stop"]');
+
+  const hasA = !!audioSources.A;
+  const hasB = !!audioSources.B;
+  // Show the control strip whenever at least one audio source is
+  // known; hide it completely when neither slot has audio so legacy
+  // non-atlas single-run views aren't cluttered with dead controls.
+  section.hidden = !(hasA || hasB);
+
+  btnA.disabled = !hasA;
+  btnB.disabled = !hasB;
+  btnSwap.disabled = !(hasA && hasB && audioState.isPlaying);
+  btnStop.disabled = !audioState.isPlaying;
+
+  btnA.dataset.active = audioState.active === "A" ? "true" : "false";
+  btnB.dataset.active = audioState.active === "B" ? "true" : "false";
+}
+
+(function wireAudioControls() {
+  const section = document.getElementById("audio-controls");
+  if (!section) return;
+  section.querySelector('[data-role="audio-play-a"]').addEventListener("click", () => playSlot("A"));
+  section.querySelector('[data-role="audio-play-b"]').addEventListener("click", () => playSlot("B"));
+  section.querySelector('[data-role="audio-swap"]').addEventListener("click", swapAudio);
+  section.querySelector('[data-role="audio-stop"]').addEventListener("click", stopAudio);
+  renderAudioControls();
+})();

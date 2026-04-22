@@ -1,0 +1,75 @@
+# Reference run config for the FLAM regime template.
+#
+# Purpose: exercise `detect_flam` with a single clean positive case. The
+# four existing regime fixtures are all negatives under the detector's
+# gates:
+#   - regime_locked: 8-node ensemble has a fan of phase offsets; the
+#     extreme pair reaches the flam band (~20 ms) but intermediate
+#     nodes fire inside the isolation margin (crowd, not flam).
+#   - regime_drifting: every candidate pair has |Δω̄| > 1.5 rad/s, well
+#     above the detector's 0.25 rad/s velocity gate.
+#   - regime_two_cluster: the leading pair inside a cluster fires ~15 ms
+#     apart with the right velocity match, but the rest of the cluster
+#     fires 5–10 ms just outside the pair window, inside the isolation
+#     margin.
+#   - regime_phase_beating: the beating pair (0,1) sits at |Δω̄| ≈ 1.22
+#     rad/s, above the velocity gate; it drifts through all offsets
+#     rather than sitting at one.
+# None of them exposes the narrow "frequency-locked pair with a small
+# persistent phase offset, isolated from other pulse activity" signature
+# this detector targets. This fixture supplies one.
+#
+# Tuning (flam pair). Two nodes at 2.00 and 2.20 Hz (Δω ≈ 1.257 rad/s)
+# positioned 0.08 apart. K0 = 2.50 rad/s through σ = 0.15 gives the pair
+# an effective coupling K_ij ≈ 2.50 · exp(-0.533) ≈ 1.47 rad/s — above
+# the |Δω|/2 ≈ 0.63 rad/s two-oscillator lock threshold, so the pair
+# frequency-locks. The lock equilibrium sits at Δθ =
+# arcsin(Δω / (2·K_ij)) ≈ 0.44 rad; at the consensus angular rate ω_c
+# ≈ 13.2 rad/s that is ~33 ms between pulses — squarely inside the
+# 15–50 ms flam band, well above regime_locked's ~20 ms crowd-pair
+# offsets and well below a full period.
+#
+# Tuning (distractors). Two nodes at 4.0 and 5.0 Hz clustered in a far
+# corner of the unit square so their cross-coupling with the pair is
+# negligible (~0.04 rad/s through the narrow σ=0.15 kernel). Distractor
+# |Δω| = 2π ≈ 6.28 rad/s, far above the velocity gate, so no other
+# pair enters the candidate band. Low-frequency distractors were chosen
+# deliberately: a 7 Hz distractor (period 143 ms) blocks roughly 70 %
+# of pair events through the isolation filter, leaving too few. At 4–5
+# Hz the per-event isolation check admits ~60 % of the pair's pulses,
+# leaving ~12–14 qualifying events over the 12 s run (warmup 1 s) —
+# comfortably above the 6-event minimum and far from the tuning
+# knife-edge.
+
+version: 1
+
+meta:
+  name: regime_flam
+  notes: >
+    FLAM reference — two near-frequency nodes (2.00, 2.20 Hz) strongly
+    coupled via close positioning and moderate K0, locking in frequency
+    with a fixed phase offset of ~0.44 rad (~33 ms between pulses). Two
+    distractor nodes at 4 and 5 Hz in a far corner so no other pair
+    enters the velocity band and most pair events pass the isolation
+    check. No noise, no events.
+
+scene:
+  N: 4
+  nodes:
+    # Flam pair — close in position, moderately close in frequency.
+    - {pos: [0.40, 0.50], omega_0_hz: 2.00, gamma: 0.10, voice: 0}
+    - {pos: [0.48, 0.50], omega_0_hz: 2.20, gamma: 0.10, voice: 1}
+    # Distractors — far from the pair, low-rate to keep isolation admitting.
+    - {pos: [0.90, 0.15], omega_0_hz: 4.00, gamma: 0.10, voice: 2}
+    - {pos: [0.90, 0.85], omega_0_hz: 5.00, gamma: 0.10, voice: 3}
+  coupling:
+    K0: 2.50        # rad/s — strong enough to lock the pair
+    sigma: 0.15     # narrow kernel; distractor-pair coupling negligible
+  noise:
+    eta: 0.00       # deterministic — keeps the flam offset clean
+
+run:
+  duration_s: 12.0
+  control_rate_hz: 200
+  audio_rate_hz: 22050
+  seed: 42

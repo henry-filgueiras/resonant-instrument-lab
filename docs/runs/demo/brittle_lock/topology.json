@@ -1,0 +1,73 @@
+{
+  "N": 5,
+  "coupling": {
+    "K0": 1.0,
+    "sigma": 0.15
+  },
+  "nodes": [
+    {
+      "gamma": 0.1,
+      "index": 0,
+      "initial_A": 1.0,
+      "initial_theta": 1.7213166190998062,
+      "omega_0_hz": 2.0,
+      "pos": [
+        0.45,
+        0.45
+      ],
+      "voice": 0
+    },
+    {
+      "gamma": 0.1,
+      "index": 1,
+      "initial_A": 1.0,
+      "initial_theta": -0.3840380893017967,
+      "omega_0_hz": 2.1,
+      "pos": [
+        0.52,
+        0.45
+      ],
+      "voice": 1
+    },
+    {
+      "gamma": 0.1,
+      "index": 2,
+      "initial_A": 1.0,
+      "initial_theta": 2.2531371815723604,
+      "omega_0_hz": 2.2,
+      "pos": [
+        0.55,
+        0.52
+      ],
+      "voice": 2
+    },
+    {
+      "gamma": 0.1,
+      "index": 3,
+      "initial_A": 1.0,
+      "initial_theta": 1.2400999002927888,
+      "omega_0_hz": 2.3,
+      "pos": [
+        0.48,
+        0.55
+      ],
+      "voice": 3
+    },
+    {
+      "gamma": 0.1,
+      "index": 4,
+      "initial_A": 1.0,
+      "initial_theta": -2.5498589250729733,
+      "omega_0_hz": 2.4,
+      "pos": [
+        0.43,
+        0.5
+      ],
+      "voice": 4
+    }
+  ],
+  "noise": {
+    "eta": 0.0
+  },
+  "version": 1
+}

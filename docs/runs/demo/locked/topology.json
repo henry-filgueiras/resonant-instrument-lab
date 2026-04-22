@@ -1,0 +1,109 @@
+{
+  "N": 8,
+  "coupling": {
+    "K0": 1.5,
+    "sigma": 0.3
+  },
+  "nodes": [
+    {
+      "gamma": 0.1,
+      "index": 0,
+      "initial_A": 1.0,
+      "initial_theta": 1.7213166190998062,
+      "omega_0_hz": 2.0,
+      "pos": [
+        0.42,
+        0.48
+      ],
+      "voice": 0
+    },
+    {
+      "gamma": 0.1,
+      "index": 1,
+      "initial_A": 1.0,
+      "initial_theta": -0.3840380893017967,
+      "omega_0_hz": 2.1,
+      "pos": [
+        0.5,
+        0.42
+      ],
+      "voice": 1
+    },
+    {
+      "gamma": 0.1,
+      "index": 2,
+      "initial_A": 1.0,
+      "initial_theta": 2.2531371815723604,
+      "omega_0_hz": 2.15,
+      "pos": [
+        0.58,
+        0.48
+      ],
+      "voice": 2
+    },
+    {
+      "gamma": 0.1,
+      "index": 3,
+      "initial_A": 1.0,
+      "initial_theta": 1.2400999002927888,
+      "omega_0_hz": 2.2,
+      "pos": [
+        0.6,
+        0.55
+      ],
+      "voice": 3
+    },
+    {
+      "gamma": 0.1,
+      "index": 4,
+      "initial_A": 1.0,
+      "initial_theta": -2.5498589250729733,
+      "omega_0_hz": 2.25,
+      "pos": [
+        0.55,
+        0.6
+      ],
+      "voice": 4
+    },
+    {
+      "gamma": 0.1,
+      "index": 5,
+      "initial_A": 1.0,
+      "initial_theta": 2.9884233715702675,
+      "omega_0_hz": 2.3,
+      "pos": [
+        0.48,
+        0.6
+      ],
+      "voice": 5
+    },
+    {
+      "gamma": 0.1,
+      "index": 6,
+      "initial_A": 1.0,
+      "initial_theta": 1.6407891386670415,
+      "omega_0_hz": 2.35,
+      "pos": [
+        0.42,
+        0.55
+      ],
+      "voice": 6
+    },
+    {
+      "gamma": 0.1,
+      "index": 7,
+      "initial_A": 1.0,
+      "initial_theta": 1.797395039824692,
+      "omega_0_hz": 2.4,
+      "pos": [
+        0.45,
+        0.5
+      ],
+      "voice": 7
+    }
+  ],
+  "noise": {
+    "eta": 0.0
+  },
+  "version": 1
+}

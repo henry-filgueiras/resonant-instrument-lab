@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>resonant instrument lab — regime oracle (A / B)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header class="page-header">
+    <h1>regime oracle — A / B</h1>
+    <p class="sub">load two <code>summary.json</code> files to compare runs side by side. either slot alone also renders. <code>?atlas=PATH</code> loads an Intervention Atlas.</p>
+  </header>
+
+  <section id="atlas-mode" class="atlas-mode" hidden aria-label="Intervention Atlas">
+    <header class="atlas-header">
+      <h2>Intervention Atlas</h2>
+      <p class="atlas-sub">
+        <span data-role="atlas-baseline-name" class="mono"></span>
+        <span class="atlas-sub-sep">·</span>
+        <span data-role="atlas-count" class="mono"></span>
+        <span class="atlas-sub-sep">·</span>
+        <span data-role="atlas-formula" class="mono"></span>
+      </p>
+      <p class="atlas-hint">Click any intervention to load it into slot B and compare against the baseline (slot A).</p>
+    </header>
+    <ol id="atlas-list" class="atlas-list"></ol>
+  </section>
+
+  <section id="comparison" class="comparison" hidden aria-label="A vs B comparison">
+    <header class="comparison-header">
+      <h2>A &rarr; B</h2>
+      <p id="takeaway" class="takeaway"></p>
+      <span id="topo-badge" class="topo-badge" hidden></span>
+    </header>
+    <ul id="diff-list" class="diff-list"></ul>
+  </section>
+
+  <section id="audio-controls" class="audio-controls" hidden aria-label="A/B audio playback">
+    <span class="audio-title mono">audio A / B</span>
+    <button type="button" data-role="audio-play-a" class="audio-btn" disabled>&#9654; play A</button>
+    <button type="button" data-role="audio-swap" class="audio-btn audio-swap" disabled>swap A &harr; B</button>
+    <button type="button" data-role="audio-play-b" class="audio-btn" disabled>&#9654; play B</button>
+    <button type="button" data-role="audio-stop" class="audio-btn audio-stop" disabled>&#9632; stop</button>
+    <span class="audio-status mono" data-role="audio-status"></span>
+    <p class="audio-hint">Play A or B to hear the pulse-synthesized audio; <em>swap</em> mutes-and-unmutes the two sources in sync so you can A/B without losing position.</p>
+  </section>
+
+  <section class="slots">
+    <article class="slot" data-slot="A">
+      <header class="slot-header">
+        <span class="slot-label">A</span>
+        <label class="file-picker">
+          <input type="file" accept="application/json,.json" data-role="file">
+          <span>load summary.json</span>
+        </label>
+        <label class="file-picker">
+          <input type="file" accept="application/json,.json" data-role="topo-file">
+          <span>+ topology.json</span>
+        </label>
+        <button type="button" data-role="paste-toggle">paste</button>
+        <span class="status" data-role="status" role="status"></span>
+      </header>
+      <section class="paste-panel" data-role="paste-panel" hidden>
+        <textarea rows="5" spellcheck="false" data-role="paste-area"
+          placeholder='{ "schema_version": 1, "meta": {...}, "detectors": {...}, "stats": {...} }'></textarea>
+        <div class="paste-actions">
+          <button type="button" data-role="paste-apply">render</button>
+        </div>
+      </section>
+      <div class="empty" data-role="empty">
+        <p>no summary loaded.</p>
+      </div>
+      <div class="summary" data-role="summary" hidden>
+        <header class="meta-card">
+          <h2 data-role="meta-name"></h2>
+          <div class="meta-grid">
+            <div><span class="k">duration</span><span class="v mono" data-role="meta-duration"></span></div>
+            <div><span class="k">N</span><span class="v mono" data-role="meta-n"></span></div>
+            <div><span class="k">rate</span><span class="v mono" data-role="meta-rate"></span></div>
+            <div><span class="k">schema</span><span class="v mono" data-role="meta-schema"></span></div>
+          </div>
+          <div class="meta-path mono" data-role="meta-path"></div>
+        </header>
+        <section class="topology-card" data-role="topology-card" aria-label="topology">
+          <div class="topology-stage" data-role="topology-stage"></div>
+          <div class="topology-footer mono" data-role="topology-footer"></div>
+        </section>
+        <section class="dynamics-card" data-role="dynamics-card" aria-label="dynamics">
+          <div class="dynamics-row">
+            <span class="dynamics-label mono">r(t)</span>
+            <div class="dynamics-stage" data-role="r-stage"></div>
+          </div>
+          <div class="dynamics-row">
+            <span class="dynamics-label mono">pulses</span>
+            <div class="dynamics-stage" data-role="raster-stage"></div>
+          </div>
+          <div class="dynamics-footer mono" data-role="dynamics-footer"></div>
+        </section>
+        <section class="detectors" data-role="detectors" aria-label="detectors"></section>
+        <section class="stats" data-role="stats" aria-label="stats"></section>
+        <details class="raw">
+          <summary>raw summary.json</summary>
+          <pre class="mono" data-role="raw-json"></pre>
+        </details>
+      </div>
+    </article>
+
+    <article class="slot" data-slot="B">
+      <header class="slot-header">
+        <span class="slot-label">B</span>
+        <label class="file-picker">
+          <input type="file" accept="application/json,.json" data-role="file">
+          <span>load summary.json</span>
+        </label>
+        <label class="file-picker">
+          <input type="file" accept="application/json,.json" data-role="topo-file">
+          <span>+ topology.json</span>
+        </label>
+        <button type="button" data-role="paste-toggle">paste</button>
+        <span class="status" data-role="status" role="status"></span>
+      </header>
+      <section class="paste-panel" data-role="paste-panel" hidden>
+        <textarea rows="5" spellcheck="false" data-role="paste-area"
+          placeholder='{ "schema_version": 1, "meta": {...}, "detectors": {...}, "stats": {...} }'></textarea>
+        <div class="paste-actions">
+          <button type="button" data-role="paste-apply">render</button>
+        </div>
+      </section>
+      <div class="empty" data-role="empty">
+        <p>no summary loaded.</p>
+      </div>
+      <div class="summary" data-role="summary" hidden>
+        <header class="meta-card">
+          <h2 data-role="meta-name"></h2>
+          <div class="meta-grid">
+            <div><span class="k">duration</span><span class="v mono" data-role="meta-duration"></span></div>
+            <div><span class="k">N</span><span class="v mono" data-role="meta-n"></span></div>
+            <div><span class="k">rate</span><span class="v mono" data-role="meta-rate"></span></div>
+            <div><span class="k">schema</span><span class="v mono" data-role="meta-schema"></span></div>
+          </div>
+          <div class="meta-path mono" data-role="meta-path"></div>
+        </header>
+        <section class="topology-card" data-role="topology-card" aria-label="topology">
+          <div class="topology-stage" data-role="topology-stage"></div>
+          <div class="topology-footer mono" data-role="topology-footer"></div>
+        </section>
+        <section class="dynamics-card" data-role="dynamics-card" aria-label="dynamics">
+          <div class="dynamics-row">
+            <span class="dynamics-label mono">r(t)</span>
+            <div class="dynamics-stage" data-role="r-stage"></div>
+          </div>
+          <div class="dynamics-row">
+            <span class="dynamics-label mono">pulses</span>
+            <div class="dynamics-stage" data-role="raster-stage"></div>
+          </div>
+          <div class="dynamics-footer mono" data-role="dynamics-footer"></div>
+        </section>
+        <section class="detectors" data-role="detectors" aria-label="detectors"></section>
+        <section class="stats" data-role="stats" aria-label="stats"></section>
+        <details class="raw">
+          <summary>raw summary.json</summary>
+          <pre class="mono" data-role="raw-json"></pre>
+        </details>
+      </div>
+    </article>
+  </section>
+
+  <section class="empty-both" id="empty-both">
+    <p>load a <code>summary.json</code> into A, B, or both.</p>
+    <p class="hint">serve the repo with <code>python -m http.server</code> and open
+      <code>demo/index.html?summaryA=../runs/demo/locked/summary.json&amp;summaryB=../runs/demo/two_cluster/summary.json</code>
+      to auto-populate both slots. each slot also fetches the sibling <code>topology.json</code>
+      (or use the per-slot <code>+ topology.json</code> picker under <code>file://</code>).</p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

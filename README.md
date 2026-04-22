@@ -12,6 +12,14 @@ The headline evaluation principle is **intervention grounding**:
 
 That turns *"does the model understand?"* into a test a laptop can run.
 
+## Live demo
+
+A precomputed static bundle is hosted on GitHub Pages:
+
+> **https://henry-filgueiras.github.io/resonant-instrument-lab/**
+
+The landing page links straight into the two Intervention Atlas entry points (`brittle_lock` and `unstable_bridge`), one A/B comparison (`locked` vs `two_cluster`), and a single-run view for every fixture. No backend — the browser fetches the same `summary.json` / `atlas.json` / `audio.wav` artifacts the simulator produces. The whole Pages tree is regenerated from source by `python scripts/build_pages.py` and committed under `docs/` (see *Rebuilding the Pages bundle* below).
+
 ## What v0 is
 
 - A coupled-oscillator simulator with pulse-driven audio and detector-grounded labels.
@@ -101,6 +109,25 @@ $ python scripts/run_ablation.py --config configs/regime_two_cluster.yaml \
 ```
 
 Semantics for node ablation are *decouple-and-silence*: the ablated node is removed from the coupling graph (every `K[k, j]` and `K[j, k]` is zeroed for the whole run) and its pulses are force-silenced in `pulse_fired`. Its `theta` keeps integrating at its natural frequency so the `(T, N)` artifact contract is preserved — but since the node is causally detached, the *other* nodes' trajectories are the honest counterfactual "what would have happened without node k". Semantics for node nudge are *detune-in-place*: the node's natural frequency is shifted by `delta_hz` for the whole run while coupling, noise, and everything else is preserved — the network still has every chance to recapture the detuned node, so the surviving coherence measures lock elasticity rather than causal removal. Each intervention writes the same artifact set as a baseline run plus a small `ablation.json` / `nudge.json` manifest documenting what was changed and under what semantics; baseline runs emit neither, so the presence of one of those files is itself the marker "this is a counterfactual bundle". Determinism: `(config + seed + intervention)` → byte-identical artifacts. Arbitrary interventions (mid-run ablation, edge ablation, topology edits, combined ablate+nudge) are deferred — each new counterfactual detector earns one narrow sibling seam here.
+
+## Rebuilding the Pages bundle
+
+`scripts/build_pages.py` is the single narrow path that produces the live demo under `docs/`:
+
+```
+$ python scripts/build_pages.py            # regenerate all fixtures, copy bundle
+$ python scripts/build_pages.py --skip-sim # only re-copy from runs/demo/
+```
+
+The script (1) regenerates every fixture's `summary.json` / `topology.json` / `atlas.json` / `audio.wav` under `runs/demo/<fixture>/` via the same `scripts/run_sim.py` + `scripts/build_atlas.py` that `./run.sh` calls, and (2) mirrors the browser-facing subset of those artifacts plus `demo/` into `docs/`. The landing page (`docs/index.html` + `docs/landing.css`) and `docs/screenshots/` are checked in directly; the script leaves them untouched. `docs/` is committed to `main`; GitHub Pages is configured to serve from `/docs` on `main`. No GitHub Actions, no `gh-pages` branch.
+
+To preview the Pages bundle locally before pushing:
+
+```
+$ cd docs && python -m http.server 8001  # then open http://localhost:8001/
+```
+
+The `runs/` directory at repo root is still git-ignored (simulator scratch); only `docs/runs/` — the Pages mirror — is tracked.
 
 ## Docs
 
