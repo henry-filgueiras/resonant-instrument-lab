@@ -13,8 +13,9 @@ Explicit Euler step with `dt = 1 / control_rate_hz`.
 Still stubbed:
 - amplitude is constant 1.0 (γ is accepted in config but unused)
 - audio is silent-but-format-correct
-- `ablate_node` events are accepted by the schema but have no effect
-  at runtime (the counterfactual path will live in sim.ablate)
+- `ablate_node` events in the config schema have no runtime effect yet
+  (mid-run ablation is deferred; the static-from-t=0 counterfactual path
+  is driven by `simulate(..., ablated_nodes=...)`, wrapped by sim.ablate)
 - `move` events are rejected at the schema layer (sim/config.py)
 """
 from __future__ import annotations
@@ -32,16 +33,31 @@ import numpy as np
 _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
 
-def simulate(cfg, out_dir, config_path=None):
+def simulate(cfg, out_dir, config_path=None, ablated_nodes=None):
     """Run the simulator for `cfg` and write artifacts to `out_dir`.
 
     `cfg` must already be validated (pass it through sim.config.load).
     `config_path`, if given, is copied verbatim to out_dir/config.yaml.
+
+    `ablated_nodes` is an optional iterable of node indices to ablate for
+    the whole run. Ablation semantics: the node is decoupled from every
+    pair in the coupling matrix (it neither drives nor is driven by any
+    other node) and its pulses are silenced in `pulse_fired`. The node's
+    `theta` continues to integrate under its own natural frequency and
+    noise so per-frame arrays retain shape `(T, N)` — but because the
+    node is causally detached, other nodes' trajectories are the
+    counterfactual trajectories the intervention is meant to expose.
+    The public counterfactual entry point is `sim.ablate.ablate_node`;
+    callers generally do not pass `ablated_nodes` directly.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     N = int(cfg["scene"]["N"])
+    ablated = frozenset(int(k) for k in (ablated_nodes or ()))
+    for k in ablated:
+        if not 0 <= k < N:
+            raise ValueError(f"ablated node {k} out of range [0, {N})")
     duration_s = float(cfg["run"]["duration_s"])
     control_rate_hz = int(cfg["run"]["control_rate_hz"])
     audio_rate_hz = int(cfg["run"]["audio_rate_hz"])
@@ -64,6 +80,11 @@ def simulate(cfg, out_dir, config_path=None):
     D = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
     K_shape = np.exp(-D / sigma)
     np.fill_diagonal(K_shape, 0.0)
+    # Node ablation: zero rows and columns so the node is mutually decoupled.
+    # Applied to K_shape (not just K_mat) so later `setK` events preserve ablation.
+    for k in ablated:
+        K_shape[k, :] = 0.0
+        K_shape[:, k] = 0.0
     K_mat = current_K0 * K_shape
 
     rng = np.random.default_rng(seed)
@@ -123,6 +144,8 @@ def simulate(cfg, out_dir, config_path=None):
 
     pulse_fired = np.zeros((T, N), dtype=bool)
     pulse_fired[1:] = (theta_w[:-1] < 0.0) & (theta_w[1:] >= 0.0)
+    for k in ablated:
+        pulse_fired[:, k] = False
 
     t = np.arange(T, dtype=np.float64) * dt
 

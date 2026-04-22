@@ -32,7 +32,7 @@ Detectors are the hardest part of the project and must pass a human sniff test b
 
 One-liner launcher: `./run.sh` creates a `.venv` if needed, regenerates demo artifacts for every fixture under `runs/demo/`, prints copy-pasteable browser URLs (including a `locked` vs `two_cluster` comparison that shows the `dominant_cluster` detector flip), and starts a static server on `http://localhost:8000`. `PORT=9000 ./run.sh` overrides the port; Ctrl-C stops the server.
 
-Five regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
+Six regime fixtures already run end-to-end. Each produces a full `state.npz` / `events.jsonl` / `topology.json` / `audio.wav` / frozen `config.yaml` bundle, plus — with `--summary` — a compact semantic verdict from the current detectors:
 
 ```
 $ python scripts/run_sim.py --config configs/regime_locked.yaml --out runs/demo/locked --summary
@@ -45,6 +45,7 @@ regime summary — configs/regime_locked.yaml
   drifting        : silent
   phase_beating   : silent
   flam            : silent
+  polyrhythmic    : silent
   dominant_cluster: silent
 
   mean r(t)                    0.981
@@ -52,7 +53,7 @@ regime summary — configs/regime_locked.yaml
   tail 2-way velocity sep.     0.00
 ```
 
-Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and `dominant_cluster` fires on the clean 4+4 velocity split with both sub-groups internally locked, while the tail 2-way velocity separability jumps to ~700; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field; swap for `configs/regime_flam.yaml` and `flam` fires on the frequency-locked near-unison pair. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
+Swap the config for `configs/regime_drifting.yaml` and `drifting` fires instead; swap for `configs/regime_two_cluster.yaml` and `dominant_cluster` fires on the clean 4+4 velocity split with both sub-groups internally locked, while the tail 2-way velocity separability jumps to ~700; swap for `configs/regime_phase_beating.yaml` and `phase_beating` fires on the near-frequency pair inside an otherwise-incoherent field; swap for `configs/regime_flam.yaml` and `flam` fires on the frequency-locked near-unison pair; swap for `configs/regime_polyrhythmic.yaml` and `polyrhythmic` fires on the 2:3 pulse-rate ratio. Detector thresholds and window sizes live inline in `sim/detectors.py`; confidence is evidence margin above/below the threshold, not a probability.
 
 Add `--summary-json` to also write the same verdicts and stats to `summary.json` in the output directory — a machine-readable seam for programmatic / browser consumers. Both views are rendered from one shared builder so they cannot drift.
 
@@ -64,6 +65,17 @@ For a browser-friendly rendering of any `summary.json`, open `demo/index.html`. 
 
 When both slots have topologies a `same topology` / `different topology` badge appears on the comparison card. Serve the repo with `./run.sh` (or `python -m http.server`) and navigate to `http://localhost:8000/demo/index.html?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/two_cluster/summary.json` to auto-load both. Vanilla HTML/CSS/JS, no build step.
 
+## Counterfactual (ablation) runs
+
+The project's headline evaluation principle — intervention grounding — rests on being able to re-run the simulator under a different intervention and compare. The first such surface is `sim.ablate`, currently narrow by design:
+
+```
+$ python scripts/run_ablation.py --config configs/regime_two_cluster.yaml \
+      --out runs/demo/two_cluster.ablate_n0 --node 0 --summary
+```
+
+Semantics for node ablation are *decouple-and-silence*: the ablated node is removed from the coupling graph (every `K[k, j]` and `K[j, k]` is zeroed for the whole run) and its pulses are force-silenced in `pulse_fired`. Its `theta` keeps integrating at its natural frequency so the `(T, N)` artifact contract is preserved — but since the node is causally detached, the *other* nodes' trajectories are the honest counterfactual "what would have happened without node k". The ablated run writes the same artifact set as a baseline run plus a small `ablation.json` manifest documenting which nodes were ablated and under what semantics; baseline runs never emit `ablation.json`, so its presence is the marker "this is a counterfactual bundle". Determinism: `(config + seed + ablated_nodes)` → byte-identical artifacts. Arbitrary interventions (mid-run ablation, edge ablation, topology edits) are deferred — this is the narrowest honest scaffold for the counterfactual-detector layer to build on.
+
 ## Docs
 
 - [`DESIGN_V0.md`](./DESIGN_V0.md) — full v0 design note.
@@ -71,4 +83,4 @@ When both slots have topologies a `same topology` / `different topology` badge a
 
 ## Status
 
-v0, pre-implementation. Design-only repo.
+v0, simulator + six detectors + counterfactual (`sim.ablate`) scaffolding landed. No model code yet.
