@@ -215,6 +215,13 @@ button:focus-visible,
 .topology-stage .topo-frame { fill: none; stroke: var(--border); stroke-width: 0.4; }
 .topology-stage .topo-grid  { stroke: var(--border); stroke-width: 0.2; opacity: 0.55; }
 .topology-stage .topo-node  { stroke: #0d1017; stroke-width: 0.6; }
+.topology-stage .topo-bridge-ring {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 0.7;
+  opacity: 0.9;
+  stroke-dasharray: 1.6 1.0;
+}
 .topology-stage .topo-label {
   fill: var(--muted);
   font-family: var(--mono);
@@ -234,6 +241,12 @@ button:focus-visible,
   letter-spacing: 0.02em;
 }
 .topology-footer .k { color: var(--dim); margin-right: 4px; }
+.topology-footer .topo-bridge-note {
+  color: var(--warn);
+  letter-spacing: 0.03em;
+  font-family: var(--mono);
+}
+.topology-footer .topo-bridge-note .k { color: var(--warn); opacity: 0.8; }
 .topology-stage .topology-missing {
   margin: 0;
   width: 100%;

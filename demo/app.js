@@ -102,6 +102,16 @@ function nodeFill(t) {
   return `hsl(${hue.toFixed(1)}, 55%, 58%)`;
 }
 
+// Collect bridge-node indices from a loaded summary, when the
+// `unstable_bridge` counterfactual detector fired. Silent / absent
+// returns an empty Set — topology renders normally with no highlight.
+function bridgeNodeSet(summary) {
+  const ub = summary && summary.detectors && summary.detectors.unstable_bridge;
+  if (!ub || !ub.fired) return new Set();
+  const list = Array.isArray(ub.bridge_nodes) ? ub.bridge_nodes : [];
+  return new Set(list.filter(Number.isInteger));
+}
+
 function renderTopology(slotKey) {
   const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
   if (!slotEl) return;
@@ -117,6 +127,7 @@ function renderTopology(slotKey) {
     return;
   }
   els.topoCard.dataset.state = "ok";
+  const bridgeNodes = bridgeNodeSet(state[slotKey]);
 
   // Geometry: 100×100 viewBox with an inner padded area so dots near the
   // edges don't clip and index labels have room.
@@ -152,6 +163,7 @@ function renderTopology(slotKey) {
   const wMax = omegas.length ? Math.max(...omegas) : 1;
   const wSpan = wMax - wMin > 1e-9 ? wMax - wMin : 1;
 
+  const bridgesRendered = [];
   for (const node of topo.nodes) {
     const p = node && node.pos;
     if (!Array.isArray(p) || p.length < 2) continue;
@@ -159,24 +171,36 @@ function renderTopology(slotKey) {
     const cy = sy(+p[1]);
     const t = typeof node.omega_0_hz === "number"
       ? (node.omega_0_hz - wMin) / wSpan : 0.5;
+    const idx = Number.isInteger(node.index) ? node.index : null;
+    const isBridge = idx != null && bridgeNodes.has(idx);
+    // Ring behind the node dot — painted first so the dot / label
+    // always sit on top of the accent.
+    if (isBridge) {
+      root.append(svg("circle", {
+        class: "topo-bridge-ring",
+        cx, cy, r: 5.0,
+      }));
+      bridgesRendered.push(idx);
+    }
     root.append(svg("circle", {
       class: "topo-node",
       cx, cy, r: 2.6,
       fill: nodeFill(t),
     }));
-    const idx = Number.isInteger(node.index) ? node.index : "";
     const lbl = svg("text", {
       class: "topo-label",
       x: cx,
       y: cy - 4.2,
     });
-    lbl.textContent = String(idx);
+    lbl.textContent = idx == null ? "" : String(idx);
     root.append(lbl);
   }
 
   els.topoStage.append(root);
 
-  // Footer: N • K0 • sigma • eta.
+  // Footer: N • K0 • sigma • eta, plus an explicit bridge-node note
+  // when `unstable_bridge` fired — so the highlight reads without
+  // requiring a hover or a scroll to the detector card.
   const fmt = (x, d = 2) =>
     typeof x === "number" && Number.isFinite(x) ? x.toFixed(d) : "—";
   const coup = topo.coupling || {};
@@ -191,6 +215,13 @@ function renderTopology(slotKey) {
     const span = el("span", null);
     span.append(el("span", "k", k), el("span", "v", v));
     els.topoFooter.append(span);
+  }
+  if (bridgesRendered.length > 0) {
+    const label = bridgesRendered.length === 1 ? "bridge node" : "bridge nodes";
+    const note = el("span", "topo-bridge-note");
+    note.append(el("span", "k", label));
+    note.append(el("span", "v", bridgesRendered.join(" · ")));
+    els.topoFooter.append(note);
   }
 }
 

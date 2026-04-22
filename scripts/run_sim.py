@@ -35,13 +35,15 @@ from sim.derived import (  # noqa: E402
     pulse_times_of,
 )
 from sim.detectors import (  # noqa: E402
+    UNSTABLE_BRIDGE_TAIL_S,
+    DetectionResult,
+    _unstable_bridge_evidence,
     detect_dominant_cluster,
     detect_drifting,
     detect_flam,
     detect_phase_beating,
     detect_phase_locked,
     detect_polyrhythmic,
-    detect_unstable_bridge,
 )
 from sim.garden import simulate  # noqa: E402
 
@@ -102,8 +104,8 @@ def _build_pulse_raster(pulse_fired, control_rate_hz):
     ]
 
 
-def _detector_block(result, control_rate_hz):
-    return {
+def _detector_block(result, control_rate_hz, *, extras=None):
+    block = {
         "fired": bool(result.fired),
         "confidence": float(result.confidence),
         "longest_window_s": float(result.longest_window_frames) / control_rate_hz,
@@ -112,6 +114,41 @@ def _detector_block(result, control_rate_hz):
             for s, e in result.windows
         ],
     }
+    if extras:
+        block.update(extras)
+    return block
+
+
+def _unstable_bridge_detection(cfg, theta, phase_vel, control_rate_hz):
+    """Run the unstable_bridge detector once and return the standard
+    `DetectionResult` alongside a `{"bridge_nodes": [...]}` extras dict
+    carrying per-bridge node indices (sorted, ascending) when fired.
+
+    The detector's public API deliberately collapses per-bridge detail
+    behind the private `_unstable_bridge_evidence` helper (consistent
+    with the pair/cluster-detector convention). The browser demo needs
+    just the node indices to highlight the implicated nodes in the
+    topology card, so we run the evidence helper directly — which also
+    means one ablation loop instead of two, and `detect_unstable_bridge`
+    itself is untouched.
+    """
+    evidence = _unstable_bridge_evidence(cfg, theta, phase_vel, control_rate_hz)
+    T = int(np.asarray(theta).shape[0])
+    tail_frames = min(int(UNSTABLE_BRIDGE_TAIL_S * control_rate_hz), T)
+    if not evidence:
+        return (
+            DetectionResult(fired=False, windows=[], confidence=0.0, longest_window_frames=0),
+            None,
+        )
+    drops = [float(e["drop"]) for e in evidence]
+    result = DetectionResult(
+        fired=True,
+        windows=[(T - tail_frames, T)],
+        confidence=float(np.mean(drops)),
+        longest_window_frames=tail_frames,
+    )
+    bridge_nodes = sorted({int(e["node"]) for e in evidence})
+    return result, {"bridge_nodes": bridge_nodes}
 
 
 def _build_summary(cfg, config_path, out_dir):
@@ -140,7 +177,9 @@ def _build_summary(cfg, config_path, out_dir):
     # Counterfactual detector: runs O(N) ablations when applicable.
     # Short-circuits to silent when `dominant_cluster` fails on baseline
     # (5 of 7 current fixtures), keeping the cost free on most runs.
-    ub = detect_unstable_bridge(cfg, theta, phase_vel, rate)
+    # Uses the evidence helper directly so we can surface per-bridge
+    # node indices in the JSON summary without running ablations twice.
+    ub, ub_extras = _unstable_bridge_detection(cfg, theta, phase_vel, rate)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -181,7 +220,7 @@ def _build_summary(cfg, config_path, out_dir):
             "flam": _detector_block(fl, rate),
             "polyrhythmic": _detector_block(ply, rate),
             "dominant_cluster": _detector_block(dc, rate),
-            "unstable_bridge": _detector_block(ub, rate),
+            "unstable_bridge": _detector_block(ub, rate, extras=ub_extras),
         },
         "stats": stats,
     }
