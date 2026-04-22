@@ -122,6 +122,21 @@ function brittleNodeSet(summary) {
   return new Set(list.filter(Number.isInteger));
 }
 
+// Node index of the currently-selected atlas intervention, or null.
+// Atlas mode only: the selection lives on `atlasState`, and only slot B
+// receives the intervention's embedded summary. Outside atlas mode (or
+// before any selection) this returns null, so the highlight is absent
+// and the topology render path is unchanged for legacy A/B URLs.
+function selectedInterventionNode(slotKey) {
+  if (slotKey !== "B") return null;
+  const data = atlasState && atlasState.data;
+  const id = atlasState && atlasState.selectedId;
+  if (!data || !id) return null;
+  const iv = (data.interventions || []).find((e) => e.id === id);
+  if (!iv || !Number.isInteger(iv.node)) return null;
+  return iv.node;
+}
+
 function renderTopology(slotKey) {
   const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
   if (!slotEl) return;
@@ -176,6 +191,8 @@ function renderTopology(slotKey) {
 
   const bridgesRendered = [];
   const brittlesRendered = [];
+  const selectedNode = selectedInterventionNode(slotKey);
+  let selectedRendered = null;
   for (const node of topo.nodes) {
     const p = node && node.pos;
     if (!Array.isArray(p) || p.length < 2) continue;
@@ -186,10 +203,13 @@ function renderTopology(slotKey) {
     const idx = Number.isInteger(node.index) ? node.index : null;
     const isBridge = idx != null && bridgeNodes.has(idx);
     const isBrittle = idx != null && brittleNodes.has(idx);
+    const isSelected = idx != null && idx === selectedNode;
     // Rings behind the node dot — painted first so the dot / label
-    // always sit on top of the accent. Bridge and brittle use
-    // different radii so the detectors cannot visually collide if a
-    // future fixture happens to fire both.
+    // always sit on top of the accent. Bridge (r=5.0), brittle (r=5.8),
+    // and atlas-selected (r=7.0) use concentric radii so all three read
+    // cleanly when a single node carries more than one highlight; the
+    // selected ring is solid while the detector rings are dashed, so
+    // the vocabulary stays legible even on monochrome capture.
     if (isBridge) {
       root.append(svg("circle", {
         class: "topo-bridge-ring",
@@ -203,6 +223,13 @@ function renderTopology(slotKey) {
         cx, cy, r: 5.8,
       }));
       brittlesRendered.push(idx);
+    }
+    if (isSelected) {
+      root.append(svg("circle", {
+        class: "topo-selected-ring",
+        cx, cy, r: 7.0,
+      }));
+      selectedRendered = idx;
     }
     root.append(svg("circle", {
       class: "topo-node",
@@ -250,6 +277,12 @@ function renderTopology(slotKey) {
     const note = el("span", "topo-brittle-note");
     note.append(el("span", "k", label));
     note.append(el("span", "v", brittlesRendered.join(" · ")));
+    els.topoFooter.append(note);
+  }
+  if (selectedRendered != null) {
+    const note = el("span", "topo-selected-note");
+    note.append(el("span", "k", "selected intervention node"));
+    note.append(el("span", "v", String(selectedRendered)));
     els.topoFooter.append(note);
   }
 }
