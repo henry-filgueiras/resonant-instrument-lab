@@ -34,6 +34,7 @@ function kvRow(k, v) {
 // --- per-slot state ---
 const state = { A: null, B: null };
 const topos = { A: null, B: null };
+const audioSources = { A: null, B: null }; // resolved absolute audio URLs
 
 function getSlotEls(slotEl) {
   const q = (role) => slotEl.querySelector(`[data-role="${role}"]`);
@@ -777,6 +778,10 @@ function wireSlot(slotEl) {
     try {
       const text = await file.text();
       renderSummary(slotKey, JSON.parse(text), file.name);
+      // File-picker load: no way to infer a sibling audio.wav under
+      // file://, so the slot simply has no audible source. The control
+      // strip disables the corresponding play button.
+      setAudioSource(slotKey, null);
     } catch (err) {
       setStatus(els, `load failed: ${err.message}`, "err");
     }
@@ -818,6 +823,8 @@ for (const slotEl of document.querySelectorAll(".slot")) wireSlot(slotEl);
 const atlasState = {
   data: null,            // parsed atlas.json
   selectedId: null,      // currently selected intervention id (or null)
+  baseUrl: null,         // absolute URL of atlas.json, for resolving
+                         // audio_path / topology_path relative links
 };
 
 function inferAtlasUrl(_) { return null; } // (no auto-discovery yet)
@@ -897,6 +904,14 @@ function selectAtlasIntervention(id) {
   // no rings.
   renderSummary("B", iv.summary, iv.label);
   if (topos.A) setTopology("B", topos.A);
+  // Wire slot B's audio to this intervention's persisted WAV, resolved
+  // relative to the atlas URL (which is `atlasState.baseUrl`). Absent
+  // `audio_path` => no B-side audio; the UI disables the play-B button.
+  if (iv.audio_path && atlasState.baseUrl) {
+    setAudioSource("B", new URL(iv.audio_path, atlasState.baseUrl).href);
+  } else {
+    setAudioSource("B", null);
+  }
   renderAtlasList();  // refresh selected styling
 }
 
@@ -917,6 +932,7 @@ async function loadAtlas(url, opts) {
   }
   atlasState.data = data;
   atlasState.selectedId = null;
+  atlasState.baseUrl = new URL(url, location.href).href;
 
   const baseline = data.baseline || {};
   baselineNameEl.textContent = baseline.config_name || "(unnamed baseline)";
@@ -945,10 +961,20 @@ async function loadAtlas(url, opts) {
   // Best-effort topology fetch — sibling next to the atlas URL.
   const topoPath = baseline.topology_path || "topology.json";
   try {
-    const turl = new URL(topoPath, new URL(url, location.href)).href;
+    const turl = new URL(topoPath, atlasState.baseUrl).href;
     const tr = await fetch(turl);
     if (tr.ok) setTopology("A", await tr.json());
   } catch (_) { /* leave topology missing */ }
+
+  // Baseline audio: resolved relative to atlas.json. The browser's
+  // A-slot play button will be wired to this URL; fetch of the file
+  // itself is lazy (on first play) via HTMLAudioElement.
+  const baselineAudio = baseline.audio_path;
+  if (baselineAudio) {
+    setAudioSource("A", new URL(baselineAudio, atlasState.baseUrl).href);
+  } else {
+    setAudioSource("A", null);
+  }
 
   // Optional ?select=ID URL hint — useful for headless screenshots and
   // for sharing a deep link to a specific intervention. Falls back to
@@ -996,5 +1022,169 @@ async function loadAtlas(url, opts) {
       if (!tr.ok) return; // missing sibling is fine — fail graceful
       setTopology(key, await tr.json());
     } catch (_) { /* network / parse: leave topology unavailable */ }
+    // Infer the sibling audio.wav for non-atlas A/B URLs. Same mechanism
+    // as the topology discovery; atlas mode sets audioSources directly
+    // from atlas.json's audio_path fields and bypasses this path.
+    const audioUrl = inferAudioUrl(url);
+    if (audioUrl) setAudioSource(key, audioUrl);
   }));
+})();
+
+// --- audio A/B playback -----------------------------------------------------
+// Two parallel <audio> elements, one per slot. Both play from frame 0 with
+// one muted so `swap A ↔ B` is a zero-latency crossmute at preserved position
+// — the cheapest way to hear "what the intervention did" without any audio
+// graph / Web Audio scheduling. If only one source is loaded, that slot plays
+// solo and the swap button stays disabled. HTMLAudioElement is enough here;
+// we never touch decoded buffers or timing primitives beyond play/pause.
+
+const audioState = {
+  elA: null,           // HTMLAudioElement for slot A
+  elB: null,           // HTMLAudioElement for slot B
+  active: null,        // "A" | "B" | null — which slot is audible
+  isPlaying: false,    // true between play start and end/stop
+};
+
+function inferAudioUrl(summaryUrl) {
+  if (typeof summaryUrl !== "string") return null;
+  const [path] = summaryUrl.split(/[?#]/, 1);
+  const m = path.match(/^(.*\/)?summary\.json$/);
+  if (!m) return null;
+  return (m[1] ?? "") + "audio.wav";
+}
+
+function _audioEl(slot) {
+  if (slot === "A") return audioState.elA;
+  if (slot === "B") return audioState.elB;
+  return null;
+}
+
+function _setAudioEl(slot, el) {
+  if (slot === "A") audioState.elA = el;
+  if (slot === "B") audioState.elB = el;
+}
+
+function setAudioSource(slotKey, url) {
+  // Record the slot's audio source and (re)build the HTMLAudioElement.
+  // Stop any in-flight playback since the source changed out from under us;
+  // the user can re-click play A or play B as they choose.
+  audioSources[slotKey] = url || null;
+  const prev = _audioEl(slotKey);
+  if (prev) {
+    try { prev.pause(); } catch (_) { /* ignore */ }
+  }
+  if (!url) {
+    _setAudioEl(slotKey, null);
+    stopAudio();
+    renderAudioControls();
+    return;
+  }
+  const el = new Audio();
+  el.preload = "auto";
+  el.src = url;
+  el.addEventListener("ended", () => {
+    if (!audioState.isPlaying) return;
+    // Both elements end at (nearly) the same instant because they play
+    // aligned from 0. Stop cleanly on the first end so the UI reflects
+    // "done" and buttons reset.
+    stopAudio();
+  });
+  el.addEventListener("error", () => {
+    setAudioStatus(`audio load failed (${slotKey})`);
+  });
+  _setAudioEl(slotKey, el);
+  renderAudioControls();
+}
+
+function stopAudio() {
+  const { elA, elB } = audioState;
+  for (const el of [elA, elB]) {
+    if (!el) continue;
+    try { el.pause(); el.currentTime = 0; } catch (_) { /* ignore */ }
+    el.muted = false;
+  }
+  audioState.active = null;
+  audioState.isPlaying = false;
+  setAudioStatus("");
+  renderAudioControls();
+}
+
+async function playSlot(slotKey) {
+  // Play from 0 aligned across both slots so `swap` is position-preserving.
+  // If only one slot has audio we just play that one solo.
+  const target = _audioEl(slotKey);
+  const other = _audioEl(slotKey === "A" ? "B" : "A");
+  if (!target) return;
+  try {
+    target.currentTime = 0;
+    target.muted = false;
+    if (other) {
+      try { other.currentTime = 0; } catch (_) { /* ignore */ }
+      other.muted = true;
+    }
+    const plays = [target.play()];
+    if (other) plays.push(other.play().catch(() => {}));
+    await Promise.all(plays);
+    audioState.active = slotKey;
+    audioState.isPlaying = true;
+    setAudioStatus(other
+      ? `playing ${slotKey} — swap to hear the other`
+      : `playing ${slotKey} — solo`);
+  } catch (err) {
+    setAudioStatus(`play failed: ${err.message}`);
+  }
+  renderAudioControls();
+}
+
+function swapAudio() {
+  const { elA, elB, active, isPlaying } = audioState;
+  if (!isPlaying || !elA || !elB || !active) return;
+  const next = active === "A" ? "B" : "A";
+  const elNext = _audioEl(next);
+  const elPrev = _audioEl(active);
+  if (!elNext || !elPrev) return;
+  elNext.muted = false;
+  elPrev.muted = true;
+  audioState.active = next;
+  setAudioStatus(`playing ${next} — swap to hear the other`);
+  renderAudioControls();
+}
+
+function setAudioStatus(msg) {
+  const el = document.querySelector('[data-role="audio-status"]');
+  if (el) el.textContent = msg || "";
+}
+
+function renderAudioControls() {
+  const section = document.getElementById("audio-controls");
+  if (!section) return;
+  const btnA = section.querySelector('[data-role="audio-play-a"]');
+  const btnB = section.querySelector('[data-role="audio-play-b"]');
+  const btnSwap = section.querySelector('[data-role="audio-swap"]');
+  const btnStop = section.querySelector('[data-role="audio-stop"]');
+
+  const hasA = !!audioSources.A;
+  const hasB = !!audioSources.B;
+  // Show the control strip whenever at least one audio source is
+  // known; hide it completely when neither slot has audio so legacy
+  // non-atlas single-run views aren't cluttered with dead controls.
+  section.hidden = !(hasA || hasB);
+
+  btnA.disabled = !hasA;
+  btnB.disabled = !hasB;
+  btnSwap.disabled = !(hasA && hasB && audioState.isPlaying);
+  btnStop.disabled = !audioState.isPlaying;
+
+  btnA.dataset.active = audioState.active === "A" ? "true" : "false";
+  btnB.dataset.active = audioState.active === "B" ? "true" : "false";
+}
+
+(function wireAudioControls() {
+  const section = document.getElementById("audio-controls");
+  if (!section) return;
+  section.querySelector('[data-role="audio-play-a"]').addEventListener("click", () => playSlot("A"));
+  section.querySelector('[data-role="audio-play-b"]').addEventListener("click", () => playSlot("B"));
+  section.querySelector('[data-role="audio-swap"]').addEventListener("click", swapAudio);
+  section.querySelector('[data-role="audio-stop"]').addEventListener("click", stopAudio);
+  renderAudioControls();
 })();

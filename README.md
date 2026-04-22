@@ -42,6 +42,10 @@ Score is deliberately simple and explainable in one sentence: `(#detector flips 
 
 A baseline detector verdict answers *"what is this run?"*. The atlas answers *"what would it take to make it something else?"* — which node do you have to remove to collapse the cluster, which one do you have to detune to break the lock. That's the intervention-grounding principle of the project made visible for one run, in the browser, with no backend and no model.
 
+### Hearing the intervention
+
+Each run now emits an audible `audio.wav` alongside the existing bundle: one short pitched click per pulse in `pulse_fired`, pitched as `180 + 80·ω₀ Hz` so nodes are distinguishable and a `nudge_node(+0.25 Hz)` shifts the nudged node's pitch audibly (no RNG — the synthesis is deterministic, so `(config + seed + intervention) → byte-identical WAV`). The atlas builder persists each intervention's audio into a sibling `atlas_audio/<intervention_id>.wav`, referenced by `audio_path` on each atlas entry. In the browser, picking an intervention exposes a compact A / B playback strip under the comparison card — **play A** (baseline), **play B** (intervention), and **swap A ↔ B** which crossmutes two sync'd audio elements so you hear the flip without losing position. Graceful fallback: if `audio_path` is missing or fails to load, the corresponding play button disables itself.
+
 ### Launch it
 
 `./run.sh` — creates `.venv` if needed, regenerates every fixture's demo artifacts (including `atlas.json` per fixture), prints copy-pasteable browser URLs, and starts a static server on `http://localhost:8000`. `PORT=9000 ./run.sh` overrides the port; Ctrl-C stops the server. The two atlas URLs print first. Deep-link to a specific intervention via `&select=ablate_n4` (or any intervention `id`) — the same mechanism the screenshots above were captured with.

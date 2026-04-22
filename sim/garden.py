@@ -176,7 +176,14 @@ def simulate(cfg, out_dir, config_path=None, ablated_nodes=None, omega_offsets=N
     )
     _write_events_jsonl(out / "events.jsonl", events)
     _write_topology_json(out / "topology.json", cfg, theta0)
-    _write_silent_wav(out / "audio.wav", duration_s, audio_rate_hz)
+    _write_pulse_wav(
+        out / "audio.wav",
+        pulse_fired=pulse_fired,
+        omega_hz=omega,
+        control_rate_hz=control_rate_hz,
+        audio_rate_hz=audio_rate_hz,
+        duration_s=duration_s,
+    )
     if config_path is not None:
         shutil.copyfile(config_path, out / "config.yaml")
 
@@ -226,11 +233,78 @@ def _write_topology_json(path, cfg, initial_theta):
         f.write("\n")
 
 
-def _write_silent_wav(path, duration_s, audio_rate_hz):
+# Pulse-synth parameters. Click length 60 ms with exp decay tau 12 ms —
+# short enough that even dense 4 Hz rasters don't smear into a drone,
+# long enough that the click has an audible pitched tail. Per-node pitch
+# is a linear function of omega_0_hz so nudges (the canonical +0.25 Hz
+# whole-run perturbation) are themselves audible as a small pitch shift.
+_CLICK_DURATION_S = 0.060
+_CLICK_DECAY_TAU_S = 0.012
+_CLICK_PITCH_BASE_HZ = 180.0
+_CLICK_PITCH_PER_HZ = 80.0
+_CLICK_AMPLITUDE = 0.30
+
+
+def _write_pulse_wav(path, *, pulse_fired, omega_hz, control_rate_hz,
+                      audio_rate_hz, duration_s):
+    """Write a mono 16-bit PCM WAV whose sound is driven by `pulse_fired`.
+
+    Each True entry in `pulse_fired[:, k]` splats a short pitched click
+    into the audio buffer at the sample corresponding to that control
+    frame. Per-node pitch is `_CLICK_PITCH_BASE_HZ + _CLICK_PITCH_PER_HZ
+    * omega_hz[k]`, so nodes with different natural frequencies are
+    audibly distinguishable and a `nudge_node(+0.25 Hz)` intervention
+    produces a small but perceivable pitch shift on the nudged node.
+
+    Deterministic (no RNG) so `(config + seed + intervention)` still
+    maps to byte-identical artifacts — the existing determinism
+    contract on atlas builds depends on this.
+    """
     n_samples = int(round(duration_s * audio_rate_hz))
-    payload = np.zeros(n_samples * 2, dtype=np.int16).tobytes()  # stereo
+    if n_samples <= 0:
+        _write_empty_wav(path, audio_rate_hz)
+        return
+
+    # Precompute one click-shape envelope; each node scales it by its
+    # own pitched sinusoid. Reusing the envelope keeps this O(N·clicks)
+    # with a small constant, fine for ~6 s runs at N≤8.
+    click_len = min(int(round(_CLICK_DURATION_S * audio_rate_hz)), n_samples)
+    t_click = np.arange(click_len, dtype=np.float64) / float(audio_rate_hz)
+    envelope = np.exp(-t_click / _CLICK_DECAY_TAU_S).astype(np.float64)
+
+    out = np.zeros(n_samples, dtype=np.float64)
+    pulse_fired = np.asarray(pulse_fired)
+    T = pulse_fired.shape[0]
+    N = pulse_fired.shape[1]
+    sample_stride = float(audio_rate_hz) / float(control_rate_hz)
+
+    for k in range(N):
+        frames = np.flatnonzero(pulse_fired[:, k])
+        if frames.size == 0:
+            continue
+        pitch_hz = _CLICK_PITCH_BASE_HZ + _CLICK_PITCH_PER_HZ * float(omega_hz[k])
+        tone = np.sin(2.0 * np.pi * pitch_hz * t_click) * envelope * _CLICK_AMPLITUDE
+        for frame in frames:
+            s = int(round(frame * sample_stride))
+            if s >= n_samples:
+                continue
+            e = min(s + click_len, n_samples)
+            out[s:e] += tone[: e - s]
+
+    # Soft clip into [-1, 1] so overlapping pulses don't wrap on overflow.
+    np.tanh(out, out=out)
+    pcm = np.round(out * 32767.0).astype(np.int16)
+
     with wave.open(str(path), "wb") as w:
-        w.setnchannels(2)
+        w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(audio_rate_hz)
-        w.writeframes(payload)
+        w.writeframes(pcm.tobytes())
+
+
+def _write_empty_wav(path, audio_rate_hz):
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(audio_rate_hz)
+        w.writeframes(b"")

@@ -37,6 +37,16 @@
     <ul id="diff-list" class="diff-list"></ul>
   </section>
 
+  <section id="audio-controls" class="audio-controls" hidden aria-label="A/B audio playback">
+    <span class="audio-title mono">audio A / B</span>
+    <button type="button" data-role="audio-play-a" class="audio-btn" disabled>&#9654; play A</button>
+    <button type="button" data-role="audio-swap" class="audio-btn audio-swap" disabled>swap A &harr; B</button>
+    <button type="button" data-role="audio-play-b" class="audio-btn" disabled>&#9654; play B</button>
+    <button type="button" data-role="audio-stop" class="audio-btn audio-stop" disabled>&#9632; stop</button>
+    <span class="audio-status mono" data-role="audio-status"></span>
+    <p class="audio-hint">Play A or B to hear the pulse-synthesized audio; <em>swap</em> mutes-and-unmutes the two sources in sync so you can A/B without losing position.</p>
+  </section>
+
   <section class="slots">
     <article class="slot" data-slot="A">
       <header class="slot-header">

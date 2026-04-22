@@ -75,10 +75,10 @@ printf '\n'
 printf 'demo artifacts regenerated under runs/demo/.\n'
 printf 'starting static server on http://localhost:%s (bind 127.0.0.1).\n\n' "$PORT"
 
-printf 'Intervention Atlas — brittle_lock (every single-node ablation breaks the lock; nudges separate brittle vs robust):\n'
+printf 'Intervention Atlas — brittle_lock (every single-node ablation breaks the lock; nudges separate brittle vs robust). Under the comparison card: play A (baseline), play B (intervention), or swap A↔B mid-play to hear the flip at preserved position:\n'
 printf '  %s?atlas=../runs/demo/brittle_lock/atlas.json&select=ablate_n4\n\n' "$BASE"
 
-printf 'Intervention Atlas — unstable_bridge (which single-node removal collapses the cluster?):\n'
+printf 'Intervention Atlas — unstable_bridge (which single-node removal collapses the cluster? — audible as the whole raster dissolving when you swap to B):\n'
 printf '  %s?atlas=../runs/demo/unstable_bridge/atlas.json&select=ablate_n0\n\n' "$BASE"
 
 printf 'A/B comparison — locked vs two_cluster (the dominant_cluster flip):\n'

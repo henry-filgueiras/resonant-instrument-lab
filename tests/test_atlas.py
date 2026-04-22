@@ -68,6 +68,7 @@ REQUIRED_INTERVENTION_KEYS = {
     "delta_hz",
     "label",
     "summary",
+    "audio_path",
     "deltas",
     "score",
     "score_components",
@@ -324,9 +325,76 @@ def test_brittle_lock_top_intervention_on_brittle_node():
         )
 
 
+# ---------------------------------------------------------------------------
+# Audio artifacts — each intervention must carry a playable WAV on disk.
+
+def test_atlas_audio_artifacts_exist_per_intervention():
+    """Every intervention's `audio_path` must point at a real, non-empty
+    WAV file that the browser A/B player can load.
+
+    Contract: `_write_atlas` writes atlas.json alongside a sibling
+    `atlas_audio/<id>.wav` for each intervention, and records the
+    relative path on each entry. This test catches:
+      - missing or misnamed audio files on disk,
+      - `audio_path` drift in the schema,
+      - the 0-byte silent-wav regression (peak amplitude must be > 0 —
+        the pulse synthesis should actually render sound, not just
+        format-correct silence).
+    """
+    fixture = "brittle_lock"  # N=5 keeps the sim bundle cheap
+    config_path = CONFIGS_DIR / f"regime_{fixture}.yaml"
+    cfg = load(config_path)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        cfg_src, _, baseline_dir = _materialize_baseline(tmp_root, fixture)
+        del cfg_src
+        atlas = _build_atlas(cfg, str(config_path), baseline_dir)
+        _write_atlas(atlas, baseline_dir)
+
+        # Baseline's own audio.wav must be referenced and audible.
+        assert atlas["baseline"]["audio_path"] == "audio.wav", (
+            f"baseline.audio_path drifted: {atlas['baseline']['audio_path']!r}"
+        )
+        baseline_wav = baseline_dir / "audio.wav"
+        assert baseline_wav.is_file(), f"baseline audio missing at {baseline_wav}"
+        _assert_wav_has_signal(baseline_wav)
+
+        for iv in atlas["interventions"]:
+            rel = iv["audio_path"]
+            assert isinstance(rel, str) and rel, (
+                f"{iv['id']}: audio_path must be a non-empty string, got {rel!r}"
+            )
+            assert rel.startswith("atlas_audio/") and rel.endswith(".wav"), (
+                f"{iv['id']}: audio_path shape drifted — got {rel!r}"
+            )
+            wav = baseline_dir / rel
+            assert wav.is_file(), (
+                f"{iv['id']}: audio_path points to missing file {wav}"
+            )
+            _assert_wav_has_signal(wav)
+
+        print(
+            f"ok: atlas audio — {fixture}: baseline + "
+            f"{len(atlas['interventions'])} intervention WAVs written and audible"
+        )
+
+
+def _assert_wav_has_signal(path):
+    """Peak absolute sample > 0 — catches the silent-WAV regression."""
+    import wave
+    import numpy as np
+    with wave.open(str(path), "rb") as w:
+        frames = w.readframes(w.getnframes())
+    arr = np.frombuffer(frames, dtype=np.int16)
+    peak = int(np.abs(arr).max()) if arr.size else 0
+    assert peak > 0, f"{path} is silent (peak sample = 0)"
+
+
 if __name__ == "__main__":
     test_atlas_smoke_brittle_lock()
     test_atlas_smoke_unstable_bridge()
     test_atlas_determinism_byte_identical()
     test_unstable_bridge_ranks_ablate_n0_near_top()
     test_brittle_lock_top_intervention_on_brittle_node()
+    test_atlas_audio_artifacts_exist_per_intervention()

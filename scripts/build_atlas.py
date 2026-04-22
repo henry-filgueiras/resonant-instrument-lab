@@ -65,6 +65,17 @@ Each intervention carries a `score_components` block and a one-line
 `score_explanation` string so the UI can show *why* the score is high
 without recomputing.
 
+Audio artifacts
+---------------
+Each intervention's sim produces an `audio.wav` (pulse-synthesized — see
+`sim.garden._write_pulse_wav`). The atlas builder persists those WAVs
+into a sibling `atlas_audio/` directory alongside `atlas.json`, one file
+per intervention named `<intervention_id>.wav`, and records the relative
+path on the entry's `audio_path`. The browser's A/B audio toggle plays
+baseline vs selected-intervention directly from these static files with
+no backend. If the sim emitted no WAV for some reason, `audio_path` is
+`null` and the UI falls back to "audio unavailable".
+
 Output schema (atlas.json, schema_version 1)
 --------------------------------------------
     {
@@ -74,6 +85,7 @@ Output schema (atlas.json, schema_version 1)
         "config_name": "...",
         "summary_path": "summary.json",
         "topology_path": "topology.json",
+        "audio_path": "audio.wav",             // null if absent
         "observational_summary": { ... }      // observational subset
       },
       "intervention_families": ["ablate_node", "nudge_node"],
@@ -90,6 +102,7 @@ Output schema (atlas.json, schema_version 1)
           "delta_hz": 0.25,
           "label": "nudge node 4 by +0.25 Hz",
           "summary": { ... },                  // observational summary
+          "audio_path": "atlas_audio/nudge_n4_+0.25hz.wav",  // null if absent
           "deltas": {
             "flips": [ {"detector":"phase_locked","from":true,"to":false}, ... ],
             "stat_changes": {
@@ -107,6 +120,7 @@ Output schema (atlas.json, schema_version 1)
 """
 import argparse
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -123,6 +137,13 @@ from sim.detectors import BRITTLE_LOCK_NUDGE_HZ  # noqa: E402
 from scripts.run_sim import _build_summary  # noqa: E402
 
 ATLAS_SCHEMA_VERSION = 1
+
+# Subdirectory (relative to `baseline_dir`) where per-intervention audio
+# WAVs are persisted. One file per intervention, named by intervention
+# id. Kept as a sibling of `atlas.json` so the atlas is self-contained
+# (atlas.json + atlas_audio/ move together), and so the browser can
+# fetch audio by a stable relative URL resolved against the atlas URL.
+ATLAS_AUDIO_SUBDIR = "atlas_audio"
 
 # Observational detectors — the ones included in atlas intervention
 # summaries and used for the flip-count score. Counterfactual detectors
@@ -287,7 +308,11 @@ def _enumerate_interventions(N):
 
 
 def _run_one_intervention(cfg, kind, node, delta_hz, work_path, config_path):
-    """Run one intervention through `sim.ablate`, build an observational summary."""
+    """Run one intervention through `sim.ablate`, build an observational
+    summary, and return `(summary, sim_dir)`. `sim_dir` holds the full
+    simulation bundle (notably `audio.wav`) which the caller can copy
+    into persistent storage before the TemporaryDirectory is cleaned up.
+    """
     sub = work_path / _intervention_id(kind, node, delta_hz)
     if kind == "ablate_node":
         ablate_node(cfg, sub, node=node)
@@ -295,7 +320,8 @@ def _run_one_intervention(cfg, kind, node, delta_hz, work_path, config_path):
         nudge_node(cfg, sub, node=node, delta_hz=delta_hz)
     else:
         raise ValueError(f"unknown intervention kind: {kind}")
-    return _build_summary(cfg, config_path, sub, include_counterfactual=False)
+    summary = _build_summary(cfg, config_path, sub, include_counterfactual=False)
+    return summary, sub
 
 
 def _build_atlas(cfg, config_path, baseline_dir):
@@ -316,11 +342,22 @@ def _build_atlas(cfg, config_path, baseline_dir):
     N = int(cfg["scene"]["N"])
     interventions_spec = _enumerate_interventions(N)
 
+    # Per-intervention audio lives alongside atlas.json so the atlas is
+    # self-contained. Cleared on every build to match the
+    # "regenerate fully on each run" posture of run.sh and the
+    # byte-identical determinism contract (a stale file from a prior
+    # build would leak into the next).
+    audio_dir = baseline_dir / ATLAS_AUDIO_SUBDIR
+    if audio_dir.exists():
+        shutil.rmtree(audio_dir)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
     interventions = []
     with tempfile.TemporaryDirectory() as tmp:
         work_path = Path(tmp)
         for kind, node, delta_hz in interventions_spec:
-            iv_summary = _run_one_intervention(
+            iv_id = _intervention_id(kind, node, delta_hz)
+            iv_summary, sim_dir = _run_one_intervention(
                 cfg, kind, node, delta_hz, work_path, config_path
             )
             iv_dets = iv_summary.get("detectors", {})
@@ -328,13 +365,24 @@ def _build_atlas(cfg, config_path, baseline_dir):
             flips = _flip_diff(baseline_dets, iv_dets)
             stat_changes = _stat_changes(baseline_stats, iv_stats)
             scoring = _score_intervention(flips, stat_changes)
+            # Persist the intervention's audio so the browser can play
+            # it back. Graceful fallback if the sim, for any reason,
+            # emitted no audio.wav — the entry's `audio_path` stays
+            # None and the UI falls back to "audio unavailable".
+            src_wav = sim_dir / "audio.wav"
+            audio_path = None
+            if src_wav.is_file():
+                dest = audio_dir / f"{iv_id}.wav"
+                shutil.copyfile(src_wav, dest)
+                audio_path = f"{ATLAS_AUDIO_SUBDIR}/{iv_id}.wav"
             entry = {
-                "id": _intervention_id(kind, node, delta_hz),
+                "id": iv_id,
                 "kind": kind,
                 "node": int(node),
                 "delta_hz": (float(delta_hz) if delta_hz is not None else None),
                 "label": _intervention_label(kind, node, delta_hz),
                 "summary": iv_summary,
+                "audio_path": audio_path,
                 "deltas": {
                     "flips": flips,
                     "stat_changes": stat_changes,
@@ -350,6 +398,13 @@ def _build_atlas(cfg, config_path, baseline_dir):
     # nudges, ascending node) — readable in the UI list.
     interventions.sort(key=lambda e: e["score"], reverse=True)
 
+    # Baseline's own audio.wav is the sibling of summary.json / atlas.json.
+    # Record the pointer so the browser's A-slot playback uses the same
+    # resolution mechanism as the intervention audio.
+    baseline_audio_path = None
+    if (baseline_dir / "audio.wav").is_file():
+        baseline_audio_path = "audio.wav"
+
     meta = baseline_full_summary.get("meta", {}) or {}
     return {
         "schema_version": ATLAS_SCHEMA_VERSION,
@@ -361,6 +416,7 @@ def _build_atlas(cfg, config_path, baseline_dir):
             "control_rate_hz": meta.get("control_rate_hz"),
             "summary_path": "summary.json",
             "topology_path": "topology.json",
+            "audio_path": baseline_audio_path,
             "observational_summary": baseline_obs,
         },
         "intervention_families": ["ablate_node", "nudge_node"],

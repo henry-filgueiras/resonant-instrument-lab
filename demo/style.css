@@ -495,6 +495,74 @@ button:focus-visible,
   line-height: 1.4;
 }
 
+/* -- audio A/B controls — small, sits under the comparison card -- */
+.audio-controls {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px 12px;
+  margin-bottom: 22px;
+  display: grid;
+  grid-template-columns: auto repeat(4, auto) 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.audio-controls .audio-title {
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.audio-controls .audio-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 12px;
+  background: var(--card-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.audio-controls .audio-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.audio-controls .audio-btn[data-active="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(52, 211, 153, 0.08);
+}
+.audio-controls .audio-btn:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.audio-controls .audio-swap { font-style: italic; }
+.audio-controls .audio-stop { color: var(--muted); }
+.audio-controls .audio-status {
+  font-size: 11px;
+  color: var(--muted);
+  justify-self: end;
+  text-align: right;
+}
+.audio-controls .audio-hint {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.audio-controls .audio-hint em { font-style: italic; color: var(--text); }
+@media (max-width: 760px) {
+  .audio-controls {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: auto;
+  }
+  .audio-controls .audio-title { grid-column: 1 / -1; }
+  .audio-controls .audio-status { grid-column: 1 / -1; justify-self: start; text-align: left; }
+  .audio-controls .audio-hint { font-size: 11px; }
+}
+
 /* -- comparison card — the visual focus, hoisted above the slot grid -- */
 .comparison {
   background: var(--card);
