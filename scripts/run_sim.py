@@ -183,13 +183,20 @@ def _brittle_lock_detection(cfg, theta, phase_vel, control_rate_hz):
     return result, {"brittle_nodes": brittle_nodes}
 
 
-def _build_summary(cfg, config_path, out_dir):
+def _build_summary(cfg, config_path, out_dir, *, include_counterfactual=True):
     """Compute the regime summary dict consumed by both text and JSON renderers.
 
     Reads `state.npz` from `out_dir`, invokes the current detectors, and
     computes a small set of supporting physical stats. The returned dict
     is the JSON schema — the text renderer consumes the same object so
     the two views cannot drift.
+
+    `include_counterfactual` is the seam used by the Intervention Atlas
+    builder to keep its per-intervention summary cost at O(1) sims (one
+    per intervention) instead of O(N) — the counterfactual detectors
+    each run an O(N) inner loop, so recursing into them on every atlas
+    intervention would inflate the atlas to O(N²) sims per fixture. The
+    atlas explicitly documents itself as observational-detectors-only.
     """
     rate = int(cfg["run"]["control_rate_hz"])
     duration_s = float(cfg["run"]["duration_s"])
@@ -206,19 +213,32 @@ def _build_summary(cfg, config_path, out_dir):
     fl = detect_flam(phase_vel, pulse_fired, rate)
     ply = detect_polyrhythmic(pulse_fired, rate)
     dc = detect_dominant_cluster(theta, phase_vel, rate)
-    # Counterfactual detector: runs O(N) ablations when applicable.
-    # Short-circuits to silent when `dominant_cluster` fails on baseline
-    # (5 of 7 current fixtures), keeping the cost free on most runs.
-    # Uses the evidence helper directly so we can surface per-bridge
-    # node indices in the JSON summary without running ablations twice.
-    ub, ub_extras = _unstable_bridge_detection(cfg, theta, phase_vel, rate)
-    # Second counterfactual detector: routes evidence through
-    # `sim.ablate.nudge_node`. Short-circuits to silent when baseline
-    # `phase_locked` fails (keeps cost zero on non-locked fixtures);
-    # on locked baselines runs O(N) small frequency-nudge reruns.
-    # Same evidence-helper pattern as unstable_bridge so per-node
-    # `brittle_nodes` reaches `summary.json` without a second loop.
-    bl, bl_extras = _brittle_lock_detection(cfg, theta, phase_vel, rate)
+
+    detectors = {
+        "phase_locked": _detector_block(pl, rate),
+        "drifting": _detector_block(dr, rate),
+        "phase_beating": _detector_block(pb, rate),
+        "flam": _detector_block(fl, rate),
+        "polyrhythmic": _detector_block(ply, rate),
+        "dominant_cluster": _detector_block(dc, rate),
+    }
+
+    if include_counterfactual:
+        # Counterfactual detector: runs O(N) ablations when applicable.
+        # Short-circuits to silent when `dominant_cluster` fails on baseline
+        # (5 of 7 current fixtures), keeping the cost free on most runs.
+        # Uses the evidence helper directly so we can surface per-bridge
+        # node indices in the JSON summary without running ablations twice.
+        ub, ub_extras = _unstable_bridge_detection(cfg, theta, phase_vel, rate)
+        # Second counterfactual detector: routes evidence through
+        # `sim.ablate.nudge_node`. Short-circuits to silent when baseline
+        # `phase_locked` fails (keeps cost zero on non-locked fixtures);
+        # on locked baselines runs O(N) small frequency-nudge reruns.
+        # Same evidence-helper pattern as unstable_bridge so per-node
+        # `brittle_nodes` reaches `summary.json` without a second loop.
+        bl, bl_extras = _brittle_lock_detection(cfg, theta, phase_vel, rate)
+        detectors["unstable_bridge"] = _detector_block(ub, rate, extras=ub_extras)
+        detectors["brittle_lock"] = _detector_block(bl, rate, extras=bl_extras)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -252,16 +272,7 @@ def _build_summary(cfg, config_path, out_dir):
             "N": N,
             "control_rate_hz": rate,
         },
-        "detectors": {
-            "phase_locked": _detector_block(pl, rate),
-            "drifting": _detector_block(dr, rate),
-            "phase_beating": _detector_block(pb, rate),
-            "flam": _detector_block(fl, rate),
-            "polyrhythmic": _detector_block(ply, rate),
-            "dominant_cluster": _detector_block(dc, rate),
-            "unstable_bridge": _detector_block(ub, rate, extras=ub_extras),
-            "brittle_lock": _detector_block(bl, rate, extras=bl_extras),
-        },
+        "detectors": detectors,
         "stats": stats,
     }
 

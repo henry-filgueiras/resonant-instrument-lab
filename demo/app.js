@@ -774,13 +774,172 @@ function wireSlot(slotEl) {
 
 for (const slotEl of document.querySelectorAll(".slot")) wireSlot(slotEl);
 
+// --- Intervention Atlas ---
+// `?atlas=PATH` mode: fetch atlas.json, load baseline summary+topology
+// into slot A, render a ranked intervention list above the comparison
+// card, and let clicks load each intervention's embedded summary into
+// slot B for A/B comparison. Reuses every existing render path —
+// renderSummary, renderTopology, renderComparison — so the atlas view
+// is a chooser on top of the A/B viewer, not a parallel renderer.
+
+const atlasState = {
+  data: null,            // parsed atlas.json
+  selectedId: null,      // currently selected intervention id (or null)
+};
+
+function inferAtlasUrl(_) { return null; } // (no auto-discovery yet)
+
+function _bucketForScore(score, maxScore) {
+  // Visual band, not a hard threshold. Helpful for at-a-glance scanning
+  // the ranked list — flips dominate, so the top group is "strong".
+  if (score >= 1.0) return "strong";    // at least one detector flip
+  if (score >= 0.1) return "medium";    // visible stat shift
+  return "weak";
+}
+
+function renderAtlasList() {
+  const root = document.getElementById("atlas-list");
+  if (!root) return;
+  const data = atlasState.data;
+  root.innerHTML = "";
+  if (!data || !Array.isArray(data.interventions)) return;
+  const interventions = data.interventions;
+  const maxScore = interventions.reduce(
+    (m, iv) => Math.max(m, +iv.score || 0), 0
+  );
+  interventions.forEach((iv, i) => {
+    const li = el("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "atlas-iv";
+    btn.dataset.id = iv.id;
+    btn.dataset.bucket = _bucketForScore(+iv.score || 0, maxScore);
+    if (iv.id === atlasState.selectedId) btn.dataset.selected = "true";
+
+    const rank = el("span", "atlas-rank mono", `#${i + 1}`);
+
+    const body = el("div", "atlas-body");
+    body.append(el("span", "atlas-label mono", iv.label || iv.id));
+    const explanation = el("span", "atlas-explanation",
+      iv.score_explanation || "(no explanation)");
+    body.append(explanation);
+    const flips = (iv.deltas && Array.isArray(iv.deltas.flips))
+      ? iv.deltas.flips : [];
+    if (flips.length > 0) {
+      const pillRow = el("div", "atlas-flips");
+      for (const f of flips) {
+        const dir = f.to ? "up" : "down";
+        const arrow = f.to ? "→ FIRED" : "→ silent";
+        const pill = el("span", "atlas-flip-pill mono",
+          `${f.detector} ${arrow}`);
+        pill.dataset.dir = dir;
+        pillRow.append(pill);
+      }
+      body.append(pillRow);
+    }
+
+    const score = el("span", "atlas-score mono",
+      typeof iv.score === "number" ? iv.score.toFixed(2) : "—");
+    const sub = el("span", "atlas-score-sub", "score");
+    score.append(sub);
+
+    btn.append(rank, body, score);
+    btn.addEventListener("click", () => selectAtlasIntervention(iv.id));
+    li.append(btn);
+    root.append(li);
+  });
+}
+
+function selectAtlasIntervention(id) {
+  const data = atlasState.data;
+  if (!data) return;
+  const iv = (data.interventions || []).find((e) => e.id === id);
+  if (!iv) return;
+  atlasState.selectedId = id;
+  // Render intervention summary into slot B, reusing baseline topology
+  // (interventions don't reshape the scene topology — only ω or coupling
+  // changes — so the topology card on B is the same picture). Bridge /
+  // brittle highlights derive from the slot's own summary, so the silent
+  // counterfactual fields on the intervention summary correctly produce
+  // no rings.
+  renderSummary("B", iv.summary, iv.label);
+  if (topos.A) setTopology("B", topos.A);
+  renderAtlasList();  // refresh selected styling
+}
+
+async function loadAtlas(url, opts) {
+  const section = document.getElementById("atlas-mode");
+  const baselineNameEl = section.querySelector('[data-role="atlas-baseline-name"]');
+  const countEl = section.querySelector('[data-role="atlas-count"]');
+  const formulaEl = section.querySelector('[data-role="atlas-formula"]');
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (err) {
+    section.hidden = false;
+    baselineNameEl.textContent = `(atlas fetch failed: ${err.message})`;
+    return;
+  }
+  atlasState.data = data;
+  atlasState.selectedId = null;
+
+  const baseline = data.baseline || {};
+  baselineNameEl.textContent = baseline.config_name || "(unnamed baseline)";
+  const n = (data.interventions || []).length;
+  countEl.textContent = `${n} intervention${n === 1 ? "" : "s"}`;
+  const ranking = data.ranking || {};
+  formulaEl.textContent = ranking.score_formula
+    ? `score = ${ranking.score_formula}`
+    : "";
+  section.hidden = false;
+  renderAtlasList();
+
+  // Load baseline summary into slot A. Prefer the embedded
+  // observational summary (already filtered to match intervention
+  // detector shape — keeps the comparison flip count honest); fall
+  // back to fetching the sibling summary.json if missing.
+  if (baseline.observational_summary) {
+    renderSummary("A", baseline.observational_summary, baseline.config_name || "baseline");
+  } else if (baseline.summary_path) {
+    try {
+      const surl = new URL(baseline.summary_path, new URL(url, location.href)).href;
+      const r = await fetch(surl);
+      if (r.ok) renderSummary("A", await r.json(), baseline.config_name || "baseline");
+    } catch (_) { /* leave A empty */ }
+  }
+  // Best-effort topology fetch — sibling next to the atlas URL.
+  const topoPath = baseline.topology_path || "topology.json";
+  try {
+    const turl = new URL(topoPath, new URL(url, location.href)).href;
+    const tr = await fetch(turl);
+    if (tr.ok) setTopology("A", await tr.json());
+  } catch (_) { /* leave topology missing */ }
+
+  // Optional ?select=ID URL hint — useful for headless screenshots and
+  // for sharing a deep link to a specific intervention. Falls back to
+  // unselected (the user clicks the list themselves) when the id is
+  // missing or doesn't match any intervention.
+  const want = opts && opts.selectId;
+  if (want && (data.interventions || []).some((iv) => iv.id === want)) {
+    selectAtlasIntervention(want);
+  }
+}
+
 // query params: ?summaryA=... & ?summaryB=...  (legacy: ?summary=... → slot A)
 // ?topologyA=... / ?topologyB=... override; otherwise infer a sibling
 // "topology.json" next to the summary URL and fetch it best-effort. Slots
 // load in parallel so each slot's summary+topology pair doesn't block the
 // other (matters for snappy first paint and for headless capture).
+// `?atlas=PATH` is the alternative entry point — see loadAtlas above.
 (function loadFromQuery() {
   const qp = new URLSearchParams(location.search);
+  const atlasUrl = qp.get("atlas");
+  if (atlasUrl) {
+    loadAtlas(atlasUrl, { selectId: qp.get("select") });
+    return;
+  }
   const pairs = [
     ["A", qp.get("summaryA") || qp.get("summary"), qp.get("topologyA")],
     ["B", qp.get("summaryB"),                      qp.get("topologyB")],

@@ -10,8 +10,23 @@
 <main>
   <header class="page-header">
     <h1>regime oracle — A / B</h1>
-    <p class="sub">load two <code>summary.json</code> files to compare runs side by side. either slot alone also renders.</p>
+    <p class="sub">load two <code>summary.json</code> files to compare runs side by side. either slot alone also renders. <code>?atlas=PATH</code> loads an Intervention Atlas.</p>
   </header>
+
+  <section id="atlas-mode" class="atlas-mode" hidden aria-label="Intervention Atlas">
+    <header class="atlas-header">
+      <h2>Intervention Atlas</h2>
+      <p class="atlas-sub">
+        <span data-role="atlas-baseline-name" class="mono"></span>
+        <span class="atlas-sub-sep">·</span>
+        <span data-role="atlas-count" class="mono"></span>
+        <span class="atlas-sub-sep">·</span>
+        <span data-role="atlas-formula" class="mono"></span>
+      </p>
+      <p class="atlas-hint">Click any intervention to load it into slot B and compare against the baseline (slot A).</p>
+    </header>
+    <ol id="atlas-list" class="atlas-list"></ol>
+  </section>
 
   <section id="comparison" class="comparison" hidden aria-label="A vs B comparison">
     <header class="comparison-header">

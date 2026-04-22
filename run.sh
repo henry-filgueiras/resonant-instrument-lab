@@ -3,8 +3,8 @@
 #
 # - Creates .venv if missing and installs requirements.txt into it.
 # - Regenerates demo artifacts (state.npz + summary.json + topology.json
-#   + events.jsonl + audio.wav + frozen config.yaml) for every fixture
-#   under runs/demo/<fixture>/.
+#   + events.jsonl + audio.wav + frozen config.yaml + atlas.json) for
+#   every fixture under runs/demo/<fixture>/.
 # - Prints a set of copy-pasteable browser URLs (single-run views plus
 #   one compelling A/B comparison).
 # - Starts a static HTTP server on PORT (default 8000, bind 127.0.0.1)
@@ -65,6 +65,7 @@ for name in "${FIXTURES[@]}"; do
     fi
     echo "generating $out ..."
     "$VENV_PY" scripts/run_sim.py --config "$cfg" --out "$out" --summary-json >/dev/null
+    "$VENV_PY" scripts/build_atlas.py --config "$cfg" --baseline-dir "$out" >/dev/null
 done
 
 # --- 4. print URLs + start server -----------------------------------------
@@ -85,6 +86,12 @@ printf '  %s?summaryA=../runs/demo/unstable_bridge/summary.json\n\n' "$BASE"
 
 printf 'A/B comparison — locked vs brittle_lock (both phase-lock; only one breaks under a +0.25 Hz nudge):\n'
 printf '  %s?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/brittle_lock/summary.json\n\n' "$BASE"
+
+printf 'Intervention Atlas — brittle_lock (every single-node ablation breaks the lock; nudges separate brittle vs robust):\n'
+printf '  %s?atlas=../runs/demo/brittle_lock/atlas.json\n\n' "$BASE"
+
+printf 'Intervention Atlas — unstable_bridge (which single-node removal collapses the cluster?):\n'
+printf '  %s?atlas=../runs/demo/unstable_bridge/atlas.json\n\n' "$BASE"
 
 printf 'Single-run views (one per fixture):\n'
 for name in "${FIXTURES[@]}"; do
