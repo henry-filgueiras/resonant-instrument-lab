@@ -86,6 +86,46 @@ Simulator + detectors + dataset dump only. **No model code yet.** Acceptance cri
 
 ## Resolved Dragons and Pivots
 
+### 2026-04-22 — Claude Opus 4.7 (validation pass — `BRITTLE_LOCK_NUDGE_HZ = 0.25` sweep)
+
+Tiny empirical pressure-test of the `BRITTLE_LOCK_NUDGE_HZ = 0.25` constant introduced in doc pass 27. No new detector, no new `sim.ablate` surface, no demo-layer changes — this is a threshold-audit only. Question asked: is `0.25 Hz` a stable, honest constant or a one-fixture accident? Answer: **stable** — it sits at the low edge of a {0.25, 0.30, 0.35} Hz plateau on both fixtures available. Constant stays canon, with one honest caveat noted.
+
+- **Sweep method.** One-off script at `/tmp/brittle_lock_sweep.py` (not committed — threshold audits are not a persistent tool surface). For each fixture in `{regime_locked, regime_brittle_lock}` and each `delta ∈ {0.15, 0.20, 0.25, 0.30, 0.35}` Hz, ran one baseline simulation and N nudged counterfactuals via `sim.ablate.nudge_node` (N = 8 and 5 respectively). Firing rule mirrors the detector: tail-window (last 3.0 s) mean global Kuramoto `r < 0.9` on the nudged run. No code path exercised that the detector itself doesn't already exercise — this is a configuration audit, not a re-implementation. Cost: 65 nudged sims total, ~4 s wall-time in the venv.
+- **Sweep results — `regime_locked` (robust lock, expected silent).**
+
+  | Δ (Hz) | fires? | brittle nodes | worst nudged tail-r | worst drop |
+  |--------|--------|---------------|---------------------|-----------|
+  | 0.15   | no     | —             | 0.9927              | 0.0025    |
+  | 0.20   | no     | —             | 0.9916              | 0.0037    |
+  | 0.25   | no     | —             | 0.9902              | 0.0050    |
+  | 0.30   | no     | —             | 0.9887              | 0.0066    |
+  | 0.35   | no     | —             | 0.9869              | 0.0084    |
+
+  Baseline tail-r = 0.9953. Worst-case nudged tail-r grows smoothly from 0.993 to 0.987 across the sweep; the lock is nowhere near the `R_LOCK = 0.9` gate at any delta tested. There is no cliff inside `[0.15, 0.35]` for this fixture — the headroom is ~0.09 r at 0.25 and still ~0.087 at 0.35.
+
+- **Sweep results — `regime_brittle_lock` (marginal lock, expected fired).**
+
+  | Δ (Hz) | fires? | brittle nodes | worst nudged tail-r | worst drop |
+  |--------|--------|---------------|---------------------|-----------|
+  | 0.15   | yes    | {4}           | 0.8581              | 0.0814    |
+  | 0.20   | yes    | {3, 4}        | 0.7487              | 0.1908    |
+  | 0.25   | yes    | {2, 3, 4}     | 0.7580              | 0.1815    |
+  | 0.30   | yes    | {2, 3, 4}     | 0.7134              | 0.2262    |
+  | 0.35   | yes    | {2, 3, 4}     | 0.6808              | 0.2588    |
+
+  Baseline tail-r = 0.9396. The detector fires at **every** delta in the sweep — the binary `fired` outcome is not sensitive to the exact choice of `BRITTLE_LOCK_NUDGE_HZ` in this range. What is sensitive is the *identity* of the brittle-node set: the outer-ω triplet `{2, 3, 4}` only emerges at `Δ ≥ 0.25`; at `Δ = 0.20` node 2 still holds at r = 0.916 (on the edge), and at `Δ = 0.15` only the outermost node 4 breaks. Above 0.25 the set saturates at `{2, 3, 4}` — 0.30 and 0.35 give the same brittle-node identity, only harder drops.
+
+- **Is 0.25 still the best narrow constant?** Yes, with the caveat below. Argument:
+  1. `0.25` is the smallest Δ in the `{0.25, 0.30, 0.35}` plateau where the `regime_brittle_lock` brittle-node set matches the documented physics story (outer-ω triplet, per `configs/regime_brittle_lock.yaml` lines 17–21). Smaller Δ fires but flags a strict subset — a narrower and less informative story.
+  2. On `regime_locked` the 0.25 Hz probe leaves every node's tail-r above 0.99 — a ~0.09 r margin above `R_LOCK`. The robust-lock reference is nowhere near misclassification.
+  3. Choosing the low edge of the plateau (0.25 rather than 0.30 or 0.35) keeps the intervention "as small as it needs to be" — consistent with the nudge's honest-probe framing: the goal is to measure elasticity, not to guarantee collapse.
+  4. The detector's binary `fired` outcome is invariant across the full `[0.15, 0.35]` Hz sweep on both fixtures — meaning the verdict (which is what consumers actually read) is robust to a ~40 % variation in the constant either side of 0.25. Only the `brittle_nodes` extras field is Δ-dependent.
+
+- **Caveat — narrow plateau upper bound is not constrained by current fixtures.** We can show `Δ = 0.25 Hz` sits at the low edge of a `{0.25, 0.30, 0.35}` plateau, but not that it is in the middle. `regime_locked` absorbs the full sweep (worst tail-r = 0.987 at 0.35), so the sweep does not find the Δ at which the robust-lock reference starts to near-miss. A single intermediate-robustness lock fixture (between `regime_locked`'s r ≈ 0.995 and `regime_brittle_lock`'s r ≈ 0.94) would let us bracket the plateau from above. Until we have such a fixture, the honest framing is "0.25 Hz is the smallest value that produces the full documented brittle-node set on the one positive fixture available, and leaves the one robust-lock fixture unambiguously silent" — not "0.25 Hz is the midpoint of a narrow honest band."
+- **Caveat — `brittle_nodes` identity is Δ-indexed, not a fixture property.** Downstream consumers (`summary.json.detectors.brittle_lock.brittle_nodes`, any future topology-ring treatment) should read the set as "nodes that break under this specific Δ", not as an intrinsic property of the scene. Flipping `BRITTLE_LOCK_NUDGE_HZ` from 0.20 to 0.25 changes the set from `{3, 4}` to `{2, 3, 4}` on the same fixture. This is expected physics, not a bug — documenting here so that a future "tighten the nudge" impulse doesn't quietly lose node 2 from the narrative.
+- **What stays canon.** `BRITTLE_LOCK_NUDGE_HZ = 0.25 Hz` in `sim/detectors.py:1453`. No code or config change from this pass.
+- **What is still not done.** No third lock fixture at intermediate robustness (would constrain the plateau's upper bound). No automated regression test over the full Δ sweep (tests still pin only the single `Δ = 0.25` path — adding a sweep as a unit test would slow the suite for modest incremental confidence). No YAML threshold file (per `DESIGN_V0.md §10.7`, deferred across all detectors). The sweep script itself lives at `/tmp/brittle_lock_sweep.py` — not committed; threshold audits are ad-hoc by design.
+
 ### 2026-04-21 — Claude Opus 4.7 (doc pass 27 — second counterfactual detector: brittle_lock + nudge sibling seam)
 
 `detect_brittle_lock` lands as the second counterfactual detector and the first client of a new `sim.ablate` sibling entry point, `nudge_node`. Detector matrix grows 7/13 → 8/13. The more important move is structural: the project now has a **second** narrow perturbation seam, each detector still rides through `sim.ablate` (per `DESIGN_V0.md §10.1`), and the pattern for adding a third (ablate/nudge/??) is concrete — one tiny simulator kwarg + one wrapper + one manifest file, nothing registry-shaped. Fixture `regime_brittle_lock` earns its place as the first thin-margin lock in the suite: baseline `phase_locked` fires at `r ≈ 0.94` (vs `regime_locked`'s `r ≈ 0.995`), a +0.25 Hz nudge pushes three of five nodes out of the coupling basin, and one new honest-negative case emerges where `regime_locked` *passes* the applicability gate and the detector stays silent because the lock is actually robust — distinct from the five fixtures that silent-short-circuit on `phase_locked`.
