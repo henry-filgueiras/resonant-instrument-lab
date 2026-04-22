@@ -112,6 +112,16 @@ function bridgeNodeSet(summary) {
   return new Set(list.filter(Number.isInteger));
 }
 
+// Sibling of `bridgeNodeSet` for the `brittle_lock` counterfactual
+// detector. Same graceful-fallback contract: silent / missing field /
+// old summary → empty Set, topology renders with no highlight.
+function brittleNodeSet(summary) {
+  const bl = summary && summary.detectors && summary.detectors.brittle_lock;
+  if (!bl || !bl.fired) return new Set();
+  const list = Array.isArray(bl.brittle_nodes) ? bl.brittle_nodes : [];
+  return new Set(list.filter(Number.isInteger));
+}
+
 function renderTopology(slotKey) {
   const slotEl = document.querySelector(`.slot[data-slot="${slotKey}"]`);
   if (!slotEl) return;
@@ -128,6 +138,7 @@ function renderTopology(slotKey) {
   }
   els.topoCard.dataset.state = "ok";
   const bridgeNodes = bridgeNodeSet(state[slotKey]);
+  const brittleNodes = brittleNodeSet(state[slotKey]);
 
   // Geometry: 100×100 viewBox with an inner padded area so dots near the
   // edges don't clip and index labels have room.
@@ -164,6 +175,7 @@ function renderTopology(slotKey) {
   const wSpan = wMax - wMin > 1e-9 ? wMax - wMin : 1;
 
   const bridgesRendered = [];
+  const brittlesRendered = [];
   for (const node of topo.nodes) {
     const p = node && node.pos;
     if (!Array.isArray(p) || p.length < 2) continue;
@@ -173,14 +185,24 @@ function renderTopology(slotKey) {
       ? (node.omega_0_hz - wMin) / wSpan : 0.5;
     const idx = Number.isInteger(node.index) ? node.index : null;
     const isBridge = idx != null && bridgeNodes.has(idx);
-    // Ring behind the node dot — painted first so the dot / label
-    // always sit on top of the accent.
+    const isBrittle = idx != null && brittleNodes.has(idx);
+    // Rings behind the node dot — painted first so the dot / label
+    // always sit on top of the accent. Bridge and brittle use
+    // different radii so the detectors cannot visually collide if a
+    // future fixture happens to fire both.
     if (isBridge) {
       root.append(svg("circle", {
         class: "topo-bridge-ring",
         cx, cy, r: 5.0,
       }));
       bridgesRendered.push(idx);
+    }
+    if (isBrittle) {
+      root.append(svg("circle", {
+        class: "topo-brittle-ring",
+        cx, cy, r: 5.8,
+      }));
+      brittlesRendered.push(idx);
     }
     root.append(svg("circle", {
       class: "topo-node",
@@ -221,6 +243,13 @@ function renderTopology(slotKey) {
     const note = el("span", "topo-bridge-note");
     note.append(el("span", "k", label));
     note.append(el("span", "v", bridgesRendered.join(" · ")));
+    els.topoFooter.append(note);
+  }
+  if (brittlesRendered.length > 0) {
+    const label = brittlesRendered.length === 1 ? "brittle node" : "brittle nodes";
+    const note = el("span", "topo-brittle-note");
+    note.append(el("span", "k", label));
+    note.append(el("span", "v", brittlesRendered.join(" · ")));
     els.topoFooter.append(note);
   }
 }
@@ -568,6 +597,7 @@ const FLIP_SENTENCE = {
   polyrhythmic:     { up: "A polyrhythm locked in.",   down: "The polyrhythm dissolved." },
   dominant_cluster: { up: "A dominant cluster formed.", down: "The cluster dissolved." },
   unstable_bridge:  { up: "A load-bearing bridge was detected.", down: "The bridge is no longer load-bearing." },
+  brittle_lock:     { up: "The lock turned brittle — a small nudge breaks it.", down: "The lock hardened against small nudges." },
 };
 
 function takeawayForFlip({ name, to }) {

@@ -83,6 +83,9 @@ printf '  %s?summaryA=../runs/demo/two_cluster/summary.json&summaryB=../runs/dem
 printf 'A/B comparison — unstable_bridge single-run (counterfactual detector fires):\n'
 printf '  %s?summaryA=../runs/demo/unstable_bridge/summary.json\n\n' "$BASE"
 
+printf 'A/B comparison — locked vs brittle_lock (both phase-lock; only one breaks under a +0.25 Hz nudge):\n'
+printf '  %s?summaryA=../runs/demo/locked/summary.json&summaryB=../runs/demo/brittle_lock/summary.json\n\n' "$BASE"
+
 printf 'Single-run views (one per fixture):\n'
 for name in "${FIXTURES[@]}"; do
     printf '  %s?summaryA=../runs/demo/%s/summary.json\n' "$BASE" "$name"
