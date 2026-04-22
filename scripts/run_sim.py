@@ -35,8 +35,10 @@ from sim.derived import (  # noqa: E402
     pulse_times_of,
 )
 from sim.detectors import (  # noqa: E402
+    BRITTLE_LOCK_TAIL_S,
     UNSTABLE_BRIDGE_TAIL_S,
     DetectionResult,
+    _brittle_lock_evidence,
     _unstable_bridge_evidence,
     detect_dominant_cluster,
     detect_drifting,
@@ -151,6 +153,36 @@ def _unstable_bridge_detection(cfg, theta, phase_vel, control_rate_hz):
     return result, {"bridge_nodes": bridge_nodes}
 
 
+def _brittle_lock_detection(cfg, theta, phase_vel, control_rate_hz):
+    """Run the brittle_lock detector once and return the standard
+    `DetectionResult` alongside a `{"brittle_nodes": [...]}` extras
+    dict carrying per-node indices (sorted, ascending) when fired.
+
+    Mirrors `_unstable_bridge_detection`: calls the private evidence
+    helper directly so the public detector's ablation/nudge loop is
+    not duplicated on the summary path, and the browser demo receives
+    a compact list of implicated nodes it can highlight on the
+    topology card.
+    """
+    evidence = _brittle_lock_evidence(cfg, theta, phase_vel, control_rate_hz)
+    T = int(np.asarray(theta).shape[0])
+    tail_frames = min(int(BRITTLE_LOCK_TAIL_S * control_rate_hz), T)
+    if not evidence:
+        return (
+            DetectionResult(fired=False, windows=[], confidence=0.0, longest_window_frames=0),
+            None,
+        )
+    drops = [float(e["drop"]) for e in evidence]
+    result = DetectionResult(
+        fired=True,
+        windows=[(T - tail_frames, T)],
+        confidence=float(np.mean(drops)),
+        longest_window_frames=tail_frames,
+    )
+    brittle_nodes = sorted({int(e["node"]) for e in evidence})
+    return result, {"brittle_nodes": brittle_nodes}
+
+
 def _build_summary(cfg, config_path, out_dir):
     """Compute the regime summary dict consumed by both text and JSON renderers.
 
@@ -180,6 +212,13 @@ def _build_summary(cfg, config_path, out_dir):
     # Uses the evidence helper directly so we can surface per-bridge
     # node indices in the JSON summary without running ablations twice.
     ub, ub_extras = _unstable_bridge_detection(cfg, theta, phase_vel, rate)
+    # Second counterfactual detector: routes evidence through
+    # `sim.ablate.nudge_node`. Short-circuits to silent when baseline
+    # `phase_locked` fails (keeps cost zero on non-locked fixtures);
+    # on locked baselines runs O(N) small frequency-nudge reruns.
+    # Same evidence-helper pattern as unstable_bridge so per-node
+    # `brittle_nodes` reaches `summary.json` without a second loop.
+    bl, bl_extras = _brittle_lock_detection(cfg, theta, phase_vel, rate)
 
     r = kuramoto_order(theta)
     mean_r = float(r.mean())
@@ -221,6 +260,7 @@ def _build_summary(cfg, config_path, out_dir):
             "polyrhythmic": _detector_block(ply, rate),
             "dominant_cluster": _detector_block(dc, rate),
             "unstable_bridge": _detector_block(ub, rate, extras=ub_extras),
+            "brittle_lock": _detector_block(bl, rate, extras=bl_extras),
         },
         "stats": stats,
     }
@@ -258,6 +298,7 @@ def _render_summary_text(summary):
         _line("polyrhythmic", det["polyrhythmic"]),
         _line("dominant_cluster", det["dominant_cluster"]),
         _line("unstable_bridge", det["unstable_bridge"]),
+        _line("brittle_lock", det["brittle_lock"]),
         "",
         f"  mean r(t)                    {stats['mean_r']:.3f}",
         f"  tail-1s r                    {stats['tail_1s_mean_r']:.3f}",

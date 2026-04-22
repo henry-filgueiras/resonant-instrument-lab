@@ -33,7 +33,7 @@ import numpy as np
 _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
 
-def simulate(cfg, out_dir, config_path=None, ablated_nodes=None):
+def simulate(cfg, out_dir, config_path=None, ablated_nodes=None, omega_offsets=None):
     """Run the simulator for `cfg` and write artifacts to `out_dir`.
 
     `cfg` must already be validated (pass it through sim.config.load).
@@ -49,6 +49,16 @@ def simulate(cfg, out_dir, config_path=None, ablated_nodes=None):
     counterfactual trajectories the intervention is meant to expose.
     The public counterfactual entry point is `sim.ablate.ablate_node`;
     callers generally do not pass `ablated_nodes` directly.
+
+    `omega_offsets` is an optional `{node_idx: delta_hz}` mapping applied
+    as a **whole-run** perturbation to each listed node's natural
+    frequency. Semantics: for node k with offset Δf, the integrator uses
+    `omega[k] += Δf` from t=0 for the entire run. Coupling is preserved
+    — the nudged node remains fully connected and can still be captured
+    or pulled out of phase; that is what makes the perturbation an
+    honest probe of lock robustness rather than a causal removal. The
+    public counterfactual entry point is `sim.ablate.nudge_node`;
+    callers generally do not pass `omega_offsets` directly.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -58,6 +68,10 @@ def simulate(cfg, out_dir, config_path=None, ablated_nodes=None):
     for k in ablated:
         if not 0 <= k < N:
             raise ValueError(f"ablated node {k} out of range [0, {N})")
+    nudges = {int(k): float(v) for k, v in (omega_offsets or {}).items()}
+    for k in nudges:
+        if not 0 <= k < N:
+            raise ValueError(f"nudged node {k} out of range [0, {N})")
     duration_s = float(cfg["run"]["duration_s"])
     control_rate_hz = int(cfg["run"]["control_rate_hz"])
     audio_rate_hz = int(cfg["run"]["audio_rate_hz"])
@@ -71,6 +85,8 @@ def simulate(cfg, out_dir, config_path=None, ablated_nodes=None):
     nodes = cfg["scene"]["nodes"]
     positions = np.array([n["pos"] for n in nodes], dtype=np.float64)
     omega = np.array([n["omega_0_hz"] for n in nodes], dtype=np.float64)
+    for k, delta_hz in nudges.items():
+        omega[k] += delta_hz
 
     sigma = float(cfg["scene"]["coupling"]["sigma"])
     eta = float(cfg["scene"]["noise"]["eta"])

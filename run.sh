@@ -24,7 +24,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO"
 
 PORT="${PORT:-8000}"
-FIXTURES=(locked drifting two_cluster phase_beating flam polyrhythmic unstable_bridge)
+FIXTURES=(locked drifting two_cluster phase_beating flam polyrhythmic unstable_bridge brittle_lock)
 
 # --- 1. python binary discovery -------------------------------------------
 if command -v python3 >/dev/null 2>&1; then

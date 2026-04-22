@@ -2,7 +2,7 @@
 
 Thin, deterministic detectors built on top of `sim.derived` primitives.
 Two global-coherence detectors, three pairwise rhythm detectors, one
-cluster-structure detector, and one counterfactual detector:
+cluster-structure detector, and two counterfactual detectors:
 
 - `detect_phase_locked`     — sustained high global coherence.
 - `detect_drifting`         — sustained low global coherence.
@@ -20,6 +20,9 @@ cluster-structure detector, and one counterfactual detector:
 - `detect_unstable_bridge`  — (counterfactual) nodes whose ablation
   collapses a previously coherent baseline cluster's local coherence.
   The first detector that routes evidence through `sim.ablate`.
+- `detect_brittle_lock`     — (counterfactual) nodes whose small
+  frequency nudge collapses a previously phase-locked ensemble's
+  global coherence. Routes evidence through `sim.ablate.nudge_node`.
 
 Threshold policy
 ----------------
@@ -1359,6 +1362,231 @@ def detect_unstable_bridge(cfg, theta, phase_vel, control_rate_hz, *, work_dir=N
     T = int(np.asarray(theta).shape[0])
     tail_frames = min(int(UNSTABLE_BRIDGE_TAIL_S * control_rate_hz), T)
     evidence = _unstable_bridge_evidence(
+        cfg, theta, phase_vel, control_rate_hz, work_dir=work_dir
+    )
+    if not evidence:
+        return DetectionResult(
+            fired=False, windows=[], confidence=0.0, longest_window_frames=0
+        )
+    mean_drop = float(np.mean([e["drop"] for e in evidence]))
+    ws = T - tail_frames
+    return DetectionResult(
+        fired=True,
+        windows=[(ws, T)],
+        confidence=mean_drop,
+        longest_window_frames=tail_frames,
+    )
+
+
+# --- brittle_lock ----------------------------------------------------------
+# Counterfactual detector. Asks: is there a node whose small frequency
+# nudge collapses the baseline's phase-locked coherence?
+#
+# Second counterfactual detector and the first to consume
+# `sim.ablate.nudge_node`. Per DESIGN_V0.md §10.1, counterfactual
+# detectors must route intervention evidence through `sim.ablate` only
+# — no ad-hoc back door. The sibling surface introduced for this
+# detector is deliberately narrow: a whole-run, single-node additive
+# offset on natural frequency (`omega[k] += delta_hz`), coupling
+# preserved. That's the honest probe of lock robustness: the network
+# still has every chance to recapture the detuned node, so surviving
+# coherence measures elasticity, not removal.
+#
+# Applicability gate
+# ------------------
+# Baseline run must already exhibit sustained global phase lock — i.e.
+# `detect_phase_locked` must fire. A run that never locks cannot be
+# "fragile" in the sense this detector means (breaking a lock that
+# didn't exist is vacuous). Silent on every baseline that fails the
+# phase-locked bar.
+#
+# Nudge magnitude — BRITTLE_LOCK_NUDGE_HZ
+# ---------------------------------------
+# `0.25 Hz` (≈ 1.57 rad/s). Chosen from a joint survey of the
+# robust-lock reference (`regime_locked`, tight 8-node ensemble with
+# per-node coupling ~6–7 rad/s) and the positive fixture
+# (`regime_brittle_lock`, marginal 5-node ensemble with per-node
+# coupling ~1.6 rad/s and ω spread 0.4 Hz):
+#   - at `regime_locked` the nudge leaves tail-r above 0.99 for every
+#     node — the robust lock absorbs the perturbation cleanly;
+#   - at `regime_brittle_lock` the nudge pushes outer-ω nodes (2, 3, 4)
+#     out of the coupling basin, collapsing tail-r to 0.90, 0.82, 0.76
+#     respectively.
+# `0.25 Hz` sits in the honest middle: large enough to matter, small
+# enough that strong locks absorb it and marginal ones break.
+#
+# Breakage gate — reuse of `R_LOCK`
+# ---------------------------------
+# A node `k` is flagged as a brittle lock-breaker when the tail-window
+# mean global `r` on the nudged run falls *below* `R_LOCK = 0.9` — the
+# same gate `detect_phase_locked` uses, crossed in the other direction.
+# The brittleness claim is "the nudge made the ensemble stop
+# qualifying as phase-locked". Reusing the gate avoids a second free
+# parameter.
+#
+# Window
+# ------
+# Tail analysis window `BRITTLE_LOCK_TAIL_S = 3.0` s, matching
+# `UNSTABLE_BRIDGE_TAIL_S` and `DOMINANT_CLUSTER_TAIL_S`. Same
+# convention across the two counterfactual detectors.
+#
+# Budget
+# ------
+# O(N) sim reruns per detector call, fully deterministic. At v0
+# fixture sizes (N ≤ 8) this is cheap. Applicability short-circuits to
+# silent when baseline `phase_locked` fails, keeping the cost zero on
+# six of seven current fixtures.
+#
+# Confidence
+# ----------
+# Mean over brittle nodes of `(r_pre − r_post)` — "how much global
+# coherence the nudge cost, averaged over brittle nodes". Scale `[0, 1]`
+# in principle; on the `regime_brittle_lock` fixture the average drop
+# across the three brittle nodes is ~0.11. `0.0` when the detector
+# does not fire, matching the other detectors' convention.
+#
+# Per-node brittle identity
+# -------------------------
+# Lives behind `_brittle_lock_evidence`, per the project's established
+# pattern. `DetectionResult` stays the uniform shape.
+BRITTLE_LOCK_TAIL_S = DOMINANT_CLUSTER_TAIL_S   # reuse — same 3 s tail
+BRITTLE_LOCK_NUDGE_HZ = 0.25                    # whole-run single-node Δω_0
+BRITTLE_LOCK_MIN_R = R_LOCK                     # reuse the phase_locked gate
+
+
+def _brittle_lock_evidence(cfg, theta, phase_vel, control_rate_hz, *, work_dir=None):
+    """Per-brittle-node evidence list for `detect_brittle_lock`.
+
+    Applies the baseline applicability gate (`phase_locked` must fire)
+    first; returns `[]` if it fails. Otherwise runs one nudged
+    counterfactual per node and records the nodes whose post-nudge
+    tail-window mean global `r` falls below `BRITTLE_LOCK_MIN_R`:
+
+        {"node": int, "delta_hz": float,
+         "baseline_r": float, "nudged_r": float, "drop": float}
+
+    Parameters
+    ----------
+    cfg : dict
+        Validated v0 config. Required — this detector runs counterfactual
+        simulations via `sim.ablate.nudge_node`.
+    theta, phase_vel : np.ndarray, shape `(T, N)`
+        Baseline state arrays from simulating `cfg`. The caller is
+        expected to have already run the baseline; the detector does
+        not re-simulate the baseline to save one sim. `phase_vel` is
+        accepted for API symmetry with the other counterfactual
+        detector but is not currently read.
+    control_rate_hz : int
+        Frames per second of the state arrays.
+    work_dir : pathlib.Path | str | None, optional
+        Scratch directory to write nudged artifact bundles into. If
+        `None`, a fresh `TemporaryDirectory` is created and cleaned up
+        at function exit. Pass an explicit path to keep the nudged
+        runs on disk for inspection.
+
+    Shared by the detector itself and by tests that want to inspect
+    which nodes contributed without re-running the simulator.
+    """
+    import tempfile
+    from pathlib import Path
+
+    # Late import to keep `sim.detectors` loadable in environments that
+    # don't have the full sim stack (e.g. partial unit tests). Mirrors
+    # the `_unstable_bridge_evidence` pattern.
+    from sim.ablate import nudge_node
+
+    theta = np.asarray(theta)
+    if theta.ndim != 2:
+        raise ValueError(f"theta must be 2D (T, N), got shape {theta.shape}")
+    T, N = theta.shape
+
+    if not detect_phase_locked(theta, control_rate_hz).fired:
+        return []
+
+    tail_frames = min(int(BRITTLE_LOCK_TAIL_S * control_rate_hz), T)
+    if tail_frames < 1:
+        return []
+    r_baseline = float(kuramoto_order(theta[-tail_frames:]).mean())
+
+    def _run_loop(work_path):
+        out = []
+        for k in range(N):
+            sub = work_path / f"nudge_n{k}"
+            nudge_node(cfg, sub, node=k, delta_hz=BRITTLE_LOCK_NUDGE_HZ)
+            with np.load(sub / "state.npz") as st:
+                a_theta = st["theta"]
+            r_post = float(kuramoto_order(a_theta[-tail_frames:]).mean())
+            if r_post < BRITTLE_LOCK_MIN_R:
+                out.append({
+                    "node": int(k),
+                    "delta_hz": float(BRITTLE_LOCK_NUDGE_HZ),
+                    "baseline_r": r_baseline,
+                    "nudged_r": r_post,
+                    "drop": r_baseline - r_post,
+                })
+        return out
+
+    if work_dir is None:
+        with tempfile.TemporaryDirectory() as tmp:
+            return _run_loop(Path(tmp))
+    return _run_loop(Path(work_dir))
+
+
+def detect_brittle_lock(cfg, theta, phase_vel, control_rate_hz, *, work_dir=None):
+    """Fire on nodes whose small frequency nudge collapses a baseline phase lock.
+
+    Defining condition
+    ------------------
+    Over the tail analysis window `[T − tail_frames, T)` with
+    `tail_frames = BRITTLE_LOCK_TAIL_S · control_rate_hz` (3 s):
+
+    - `detect_phase_locked` must fire on the baseline run —
+      applicability gate. Runs that never lock cannot be brittle.
+    - There exists at least one node `k` such that, on a counterfactual
+      run produced by `sim.ablate.nudge_node(cfg, node=k,
+      delta_hz=BRITTLE_LOCK_NUDGE_HZ=0.25)`, the tail-window mean
+      global Kuramoto `r` is *below* `BRITTLE_LOCK_MIN_R =
+      R_LOCK = 0.9`.
+
+    Parameters
+    ----------
+    cfg : dict
+        Validated v0 config — the baseline scene. Required because
+        nudges re-simulate from this config via `sim.ablate.nudge_node`.
+    theta : np.ndarray, shape `(T, N)`
+        Baseline phase trajectories.
+    phase_vel : np.ndarray, shape `(T, N)`
+        Baseline per-frame phase velocities. Accepted for API symmetry
+        with `detect_unstable_bridge`; the firing rule is phase-only.
+    control_rate_hz : int
+        Frames per second of the state arrays.
+    work_dir : pathlib.Path | str | None, optional
+        Scratch directory for nudged artifact bundles. `None` uses a
+        short-lived `TemporaryDirectory`; pass a real path to keep the
+        bundles for inspection.
+
+    Returns
+    -------
+    DetectionResult
+        `fired` is True iff at least one brittle node was found.
+        `windows` is a single tail-window entry `[(T − tail_frames, T)]`
+        — the analysis boundary, same as `detect_unstable_bridge`.
+        `confidence` is the mean of `(baseline_r − nudged_r)` across
+        brittle nodes — "how much global coherence the nudge cost,
+        averaged over brittle nodes". Scale `[0, 1]` in principle.
+        `longest_window_frames` is the tail-window length.
+
+    Notes
+    -----
+    The public result deliberately collapses per-node detail into the
+    standard `DetectionResult` shape — consistent with the other
+    pair/cluster/counterfactual detectors. To inspect *which* nodes
+    were flagged (and with what baseline/nudged r), call
+    `_brittle_lock_evidence` directly.
+    """
+    T = int(np.asarray(theta).shape[0])
+    tail_frames = min(int(BRITTLE_LOCK_TAIL_S * control_rate_hz), T)
+    evidence = _brittle_lock_evidence(
         cfg, theta, phase_vel, control_rate_hz, work_dir=work_dir
     )
     if not evidence:

@@ -25,6 +25,9 @@ import numpy as np  # noqa: E402
 
 from sim import load, simulate  # noqa: E402
 from sim.detectors import (  # noqa: E402
+    BRITTLE_LOCK_MIN_R,
+    BRITTLE_LOCK_NUDGE_HZ,
+    BRITTLE_LOCK_TAIL_S,
     DOMINANT_CLUSTER_MIN_LOCAL_R,
     DOMINANT_CLUSTER_MIN_SEP,
     DOMINANT_CLUSTER_MIN_SIZE,
@@ -48,11 +51,13 @@ from sim.detectors import (  # noqa: E402
     POLY_WARMUP_S,
     UNSTABLE_BRIDGE_MIN_CLUSTER_SIZE,
     UNSTABLE_BRIDGE_TAIL_S,
+    _brittle_lock_evidence,
     _dominant_cluster_evidence,
     _flam_pair_evidence,
     _phase_beating_pair_evidence,
     _polyrhythmic_pair_evidence,
     _unstable_bridge_evidence,
+    detect_brittle_lock,
     detect_dominant_cluster,
     detect_drifting,
     detect_flam,
@@ -674,6 +679,106 @@ def test_detect_unstable_bridge_across_regimes():
     )
 
 
+# ---------------------------------------------------------------------------
+# brittle_lock — counterfactual detector: fires when a small whole-run
+# frequency nudge to some node collapses a baseline phase lock. Expected
+# fire/silent matrix across the current fixtures:
+#
+#   regime_brittle_lock   : FIRES  (nodes 2, 3, 4 each drop tail-r below 0.9)
+#   regime_locked         : silent (robust lock: even 0.25 Hz nudge stays
+#                                   ~0.99; lock absorbs the perturbation)
+#   regime_drifting       : silent (phase_locked applicability gate fails)
+#   regime_phase_beating  : silent (phase_locked applicability gate fails)
+#   regime_flam           : silent (phase_locked applicability gate fails)
+#   regime_polyrhythmic   : silent (phase_locked applicability gate fails)
+#   regime_two_cluster    : silent (phase_locked applicability gate fails)
+#   regime_unstable_bridge: silent (phase_locked applicability gate fails)
+#
+# regime_locked is the interesting honest negative: it passes the
+# applicability gate (it IS phase-locked on baseline) but its coupling
+# is strong enough that no single-node 0.25 Hz nudge pushes the
+# ensemble below the 0.9 gate. Silent here means "the lock is robust",
+# not "the detector didn't apply".
+
+def test_detect_brittle_lock_across_regimes():
+    # (a) fires cleanly on the dedicated positive fixture
+    cfg, art = _run(CONFIGS_DIR / "regime_brittle_lock.yaml")
+    rate = cfg["run"]["control_rate_hz"]
+    result = detect_brittle_lock(cfg, art["theta"], art["phase_vel"], rate)
+    assert result.fired, "brittle_lock should fire on regime_brittle_lock"
+    T = art["theta"].shape[0]
+    tail_frames = int(BRITTLE_LOCK_TAIL_S * rate)
+    assert result.longest_window_frames == tail_frames
+    assert result.windows == [(T - tail_frames, T)]
+    # Observed mean drop ≈ 0.11 across nodes 2, 3, 4.
+    assert result.confidence > 0.05, (
+        f"expected a material tail-r drop (>0.05), got confidence {result.confidence:.4f}"
+    )
+
+    # The load-bearing brittle nodes are the three outer-ω nodes (2, 3, 4).
+    # Inner-ω nodes (0, 1) stay above the 0.9 gate when nudged — the
+    # ensemble recaptures them.
+    evidence = _brittle_lock_evidence(cfg, art["theta"], art["phase_vel"], rate)
+    brittle_nodes = sorted({int(e["node"]) for e in evidence})
+    assert brittle_nodes == [2, 3, 4], (
+        f"expected brittle nodes = [2, 3, 4], got {brittle_nodes}"
+    )
+    for e in evidence:
+        assert e["baseline_r"] >= BRITTLE_LOCK_MIN_R, (
+            f"baseline r must clear the gate on a phase_locked-applicable run; "
+            f"got baseline_r={e['baseline_r']:.4f}"
+        )
+        assert e["nudged_r"] < BRITTLE_LOCK_MIN_R, (
+            f"brittle node {e['node']}: nudged tail-r must fall below the gate; "
+            f"got nudged_r={e['nudged_r']:.4f}"
+        )
+        assert e["delta_hz"] == BRITTLE_LOCK_NUDGE_HZ
+
+    # (b) silent on regime_locked — applicability gate passes but lock
+    # is robust; worst-case post-nudge tail-r stays ~0.99.
+    cfg_l, art_l = _run(CONFIGS_DIR / "regime_locked.yaml")
+    result_l = detect_brittle_lock(
+        cfg_l, art_l["theta"], art_l["phase_vel"], cfg_l["run"]["control_rate_hz"]
+    )
+    _assert_silent(result_l, "brittle_lock", "regime_locked")
+    # Evidence must be empty — not just "detector returned silent"; we
+    # want the honest-negative path where the loop runs and every node
+    # holds the lock.
+    ev_l = _brittle_lock_evidence(
+        cfg_l, art_l["theta"], art_l["phase_vel"], cfg_l["run"]["control_rate_hz"]
+    )
+    assert ev_l == [], (
+        f"regime_locked is robust; nudge evidence must be empty, got {ev_l}"
+    )
+
+    # (c) silent on every phase_locked-silent fixture — applicability gate fails.
+    for name in [
+        "regime_drifting",
+        "regime_phase_beating",
+        "regime_flam",
+        "regime_polyrhythmic",
+        "regime_two_cluster",
+        "regime_unstable_bridge",
+    ]:
+        cfg_x, art_x = _run(CONFIGS_DIR / f"{name}.yaml")
+        _assert_silent(
+            detect_brittle_lock(
+                cfg_x, art_x["theta"], art_x["phase_vel"], cfg_x["run"]["control_rate_hz"]
+            ),
+            "brittle_lock", name,
+        )
+
+    drops = {e["node"]: (e["baseline_r"], e["nudged_r"]) for e in evidence}
+    print(
+        f"ok: brittle_lock — brittle_lock fixture fired "
+        f"(conf={result.confidence:.4f}, nudge=+{BRITTLE_LOCK_NUDGE_HZ:.2f} Hz, "
+        f"brittle={brittle_nodes}, "
+        f"{'; '.join(f'n{k}: {r0:.3f}→{r1:.3f}' for k, (r0, r1) in drops.items())}); "
+        f"locked silent (lock robust); drifting, phase_beating, flam, polyrhythmic, "
+        f"two_cluster, unstable_bridge silent (applicability gate)"
+    )
+
+
 if __name__ == "__main__":
     test_detect_phase_locked_across_regimes()
     test_detect_drifting_across_regimes()
@@ -682,3 +787,4 @@ if __name__ == "__main__":
     test_detect_polyrhythmic_across_regimes()
     test_detect_dominant_cluster_across_regimes()
     test_detect_unstable_bridge_across_regimes()
+    test_detect_brittle_lock_across_regimes()
